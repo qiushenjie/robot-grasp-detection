@@ -189,6 +189,83 @@ class GraspDataset(object):
         return dataset
 
 
+def read_label_file(path):
+    with open(path) as f:
+        xys = []
+        has_nan = False
+        for l in f:
+            x, y = map(float, l.split())
+            # XXX some bounding boxes has nan coordinates
+            if np.isnan(x) or np.isnan(y):
+                has_nan = True
+            xys.append((x, y))
+            if len(xys) % 4 == 0 and len(xys) / 4 >= 1:
+                if not has_nan:
+                    yield xys[-4], xys[-3], xys[-2], xys[-1]
+                has_nan = False
+
+
+def bbox_info(box):
+    # coordinates order y0, x0, y1, x1, ...
+    box_coordinates = []
+
+    for i in range(4):
+        for j in range(2):
+            box_coordinates.append(box[i][j])
+    center_x = (box_coordinates[1] + box_coordinates[5])/2
+    center_y = (box_coordinates[0] + box_coordinates[4])/2
+    center = (center_y, center_x)
+    angle = np.arctan2((box_coordinates[2] - box_coordinates[0]),
+                       (box_coordinates[3] - box_coordinates[1]))
+    width = abs(box_coordinates[5] - box_coordinates[1])
+    height = abs(box_coordinates[4] - box_coordinates[0])
+
+    return box_coordinates, center, angle, width, height
+
+
+def get_bbox_info_dict(path):
+    # list of list [y0_list, x0_list, y1_list, x1_list, ...]
+    coordinates_list = [[]] * 8
+    # list of centers
+    center_x_list = []
+    center_y_list = []
+    # list of angles
+    angle_list = []
+    cos_list = []
+    sin_list = []
+    # list of width and height
+    width_list = []
+    height_list = []
+    # list of label success/fail, 1/0
+    grasp_success = []
+    for i, box in enumerate(read_label_file(path)):
+        coordinates, center, angle, width, height = bbox_info(box)
+        for i in range(8):
+            coordinates_list[i].append(coordinates[i])
+        center_list_x.append(center[1])
+        center_list_y.append(center[0])
+        angle_list.append(angle)
+        cos_list.append(np.cos(angle))
+        sin_list.append(np.sin(angle))
+        width_list.append(width)
+        height_list.append(height)
+        grasp_success.append(1)
+    feature = {}
+    for i in range(4):
+        feature['y' + str(i)] = _floats_feature(coordinates_list[2*i])
+        feature['x' + str(i)] = _floats_feature(coordinates_list[2*i+1])
+    feature['cy'] = _floats_feature(center_y_list)
+    feature['cx'] = _floats_feature(center_x_list)
+    feature['theta'] = _floats_feature(angle_list)
+    feature['sin_theta'] = _floats_feature(sin_list)
+    feature['cos_theta'] = _floats_feature(cos_list)
+    feature['width'] = _floats_feature(width_list)
+    feature['height'] = _floats_feature(height_list)
+    feature['grasp_success'] = _int64_feature(grasp_success)
+
+    return feature
+
+
 class ImageCoder(object):
     def __init__(self):
         self._sess = tf.Session()
@@ -231,14 +308,15 @@ def _floats_feature(v):
 def _bytes_feature(v):
     return tf.train.Feature(bytes_list=tf.train.BytesList(value=[v]))
 
-def _convert_to_example(filename, bboxes, image_buffer, height, width):
+def _convert_to_example(filename, bbox_pos, bbox_neg, image_buffer, height, width):
     # Build an Example proto for an example
-    example = tf.train.Example(features=tf.train.Features(feature={
-          'image/filename': _bytes_feature(filename),
-          'image/encoded': _bytes_feature(image_buffer),
-          'image/height': _int64_feature(height),
-          'image/width': _int64_feature(width),
-          'bboxes': _floats_feature(bboxes)}))
+    feature = {'image/filename': _bytes_feature(filename),
+               'image/encoded': _bytes_feature(image_buffer),
+               'image/height': _int64_feature(height),
+               'image/width': _int64_feature(width)}
+    feature.update(bbox_pos)
+    feature.update(bbox_neg)
+    example = tf.train.Example(features=tf.train.Features(feature=feature))
     return example
 
 def main():
@@ -270,10 +348,13 @@ def main():
 
     coder = ImageCoder()
     for filename in tqdm(filenames):
-        bbox = filename[:-5]+'cpos.txt'
-        bboxes = _process_bboxes(bbox)
+        bbox_pos_path = filename[:-5]+'cpos.txt'
+        bbox_neg_path = filename[:-5]+'cnegs.txt'
+        bbox_pos_dict = get_bbox_info_dict(bbox_pos_path)
+        bbox_neg_dict = get_bbox_info_dict(bbox_neg_path)
         image_buffer, height, width = _process_image(filename, coder)
-        example = _convert_to_example(filename, bboxes, image_buffer, height, width)
+        example = _convert_to_example(filename, bbox_pos_dict, bbox_neg_dict,
+                                      image_buffer, height, width)
         # Split the dataset in 80% for training and 20% for validation
         if count % 5 == 0:
             writer_validation.write(example.SerializeToString())

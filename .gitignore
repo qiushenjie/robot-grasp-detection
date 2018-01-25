@@ -1,3 +1,6 @@
 *.pyc
 *.out
 logdir/*
+*.json
+*.env
+bb_file.txt
