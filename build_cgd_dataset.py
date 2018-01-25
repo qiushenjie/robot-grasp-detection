@@ -46,7 +46,7 @@ flags.DEFINE_string('data_dir',
                     """Path to dataset in TFRecord format
                     (aka Example protobufs) and feature csv files.""")
 flags.DEFINE_string('grasp_dataset', 'all', 'TODO(ahundt): integrate with brainrobotdata or allow subsets to be specified')
-flags.DEFINE_boolean('grasp_download', True,
+flags.DEFINE_boolean('grasp_download', False,
                      """Download the grasp_dataset to data_dir if it is not already present.""")
 
 FLAGS = flags.FLAGS
@@ -242,8 +242,8 @@ def get_bbox_info_dict(path):
         coordinates, center, angle, width, height = bbox_info(box)
         for i in range(8):
             coordinates_list[i].append(coordinates[i])
-        center_list_x.append(center[1])
-        center_list_y.append(center[0])
+        center_x_list.append(center[1])
+        center_y_list.append(center[0])
         angle_list.append(angle)
         cos_list.append(np.cos(angle))
         sin_list.append(np.sin(angle))
@@ -349,7 +349,7 @@ def main():
     coder = ImageCoder()
     for filename in tqdm(filenames):
         bbox_pos_path = filename[:-5]+'cpos.txt'
-        bbox_neg_path = filename[:-5]+'cnegs.txt'
+        bbox_neg_path = filename[:-5]+'cneg.txt'
         bbox_pos_dict = get_bbox_info_dict(bbox_pos_path)
         bbox_neg_dict = get_bbox_info_dict(bbox_neg_path)
         image_buffer, height, width = _process_image(filename, coder)
