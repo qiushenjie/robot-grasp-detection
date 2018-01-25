@@ -135,16 +135,19 @@ def batch_inputs(data_files, train, num_epochs, batch_size,
         _, examples_serialized = reader.read(filename_queue)
 
     images_and_bboxes=[]
+    features = []
     for thread_id in range(num_preprocess_threads):
-        image_buffer, bbox = parse_example_proto(examples_serialized)
-        image = image_preprocessing(image_buffer, train, thread_id)
+        feature = parse_example_proto(examples_serialized)
+        feature['image/decoded'] = image_preprocessing(feature['image/encoded'], train, thread_id)
         images_and_bboxes.append([image, bbox])
+        features.append(feature)
 
-    images, bboxes = tf.train.batch_join(
-        images_and_bboxes,
+    features = tf.train.batch_join(
+        features,
         batch_size=batch_size,
         capacity=2*num_preprocess_threads*batch_size)
-
+    
+    # TODO replace with grasp_dataset.py
     height = FLAGS.image_size
     width = FLAGS.image_size
     depth = 3
