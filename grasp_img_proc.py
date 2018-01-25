@@ -5,7 +5,7 @@ FLAGS = tf.app.flags.FLAGS
 
 tf.app.flags.DEFINE_integer('image_size', 224,
                             """Provide square images of this size.""")
-tf.app.flags.DEFINE_integer('num_preprocess_threads', 12, 
+tf.app.flags.DEFINE_integer('num_preprocess_threads', 12,
                             """Number of preprocessing threads per tower. """
                             """Please make this a multiple of 4.""")
 tf.app.flags.DEFINE_integer('num_readers', 12,
@@ -15,18 +15,35 @@ tf.app.flags.DEFINE_integer('input_queue_memory_factor', 12,
                             """Default is ideal but try smaller values, e.g. """
                             """4, 2 or 1, if host memory is constrained. See """
                             """comments in code for more details.""")
+
+
 def parse_example_proto(examples_serialized):
-    feature_map={
+    feature_map = {
         'image/encoded': tf.FixedLenFeature([], dtype=tf.string,
                                             default_value=''),
-        'bboxes': tf.VarLenFeature(dtype=tf.float32)
-        }
-    features=tf.parse_single_example(examples_serialized, feature_map)
-    bboxes = tf.sparse_tensor_to_dense(features['bboxes'])
-    r = 8*tf.random_uniform((1,), minval=0, maxval=tf.size(bboxes, out_type=tf.int32)/8, dtype=tf.int32)
-    bbox = tf.gather_nd(bboxes, [r,r+1,r+2,r+3,r+4,r+5,r+6,r+7])
-    
-    return features['image/encoded'], bbox
+        'image/filename': tf.FixedLenFeature([], dtype=tf.string,
+                                             default_value=''),
+        'image/height': tf.FixedLenFeature([], dtype=tf.int32,
+                                           default_value=''),
+        'image/width': tf.FixedLenFeature([], dtype=tf.int32,
+                                          default_value='')}
+    for i in range(4):
+        y_key = 'y' + str(i)
+        x_key = 'x' + str(i)
+        feature_map[y_key] = tf.VarLenFeature(dtype=tf.float32)
+        feature_map[x_key] = tf.VarLenFeature(dtype=tf.float32)
+    feature_map['cy'] = tf.VarLenFeature(dtype=tf.float32)
+    feature_map['cx'] = tf.VarLenFeature(dtype=tf.float32)
+    feature_map['theta'] = tf.VarLenFeature(dtype=tf.float32)
+    feature_map['sin_theta'] = tf.VarLenFeature(dtype=tf.float32)
+    feature_map['cos_theta'] = tf.VarLenFeature(dtype=tf.float32)
+    feature_map['width'] = tf.VarLenFeature(dtype=tf.float32)
+    feature_map['height'] = tf.VarLenFeature(dtype=tf.float32)
+    feature_map['grasp_success'] = tf.VarLenFeature(dtype=tf.int32)
+
+    features = tf.parse_single_example(examples_serialized, feature_map)
+
+    return features
 
 
 def eval_image(image, height, width):
@@ -35,7 +52,7 @@ def eval_image(image, height, width):
     image = tf.image.resize_bilinear(image, [height, width],
                                      align_corners=False)
     image = tf.squeeze(image, [0])
- 
+
     return image
 
 
@@ -90,7 +107,7 @@ def batch_inputs(data_files, train, num_epochs, batch_size,
                                                         num_epochs,
                                                         shuffle=False,
                                                         capacity=1)
-    
+
     examples_per_shard = 1024
     min_queue_examples = examples_per_shard * FLAGS.input_queue_memory_factor
     if train:
@@ -116,26 +133,26 @@ def batch_inputs(data_files, train, num_epochs, batch_size,
     else:
         reader = tf.TFRecordReader()
         _, examples_serialized = reader.read(filename_queue)
-    
+
     images_and_bboxes=[]
     for thread_id in range(num_preprocess_threads):
         image_buffer, bbox = parse_example_proto(examples_serialized)
         image = image_preprocessing(image_buffer, train, thread_id)
         images_and_bboxes.append([image, bbox])
-    
+
     images, bboxes = tf.train.batch_join(
         images_and_bboxes,
         batch_size=batch_size,
         capacity=2*num_preprocess_threads*batch_size)
-    
+
     height = FLAGS.image_size
     width = FLAGS.image_size
     depth = 3
-    
+
     images = tf.cast(images, tf.float32)
     images = tf.reshape(images, shape=[batch_size, height, width, depth])
 
-    return images, bboxes 
+    return images, bboxes
 
 
 def distorted_inputs(data_files, num_epochs, train=True, batch_size=None):
@@ -145,7 +162,7 @@ def distorted_inputs(data_files, num_epochs, train=True, batch_size=None):
             data_files, train, num_epochs, batch_size,
             num_preprocess_threads=FLAGS.num_preprocess_threads,
             num_readers=FLAGS.num_readers)
-  
+
     return images, bboxes
 
 
@@ -156,5 +173,5 @@ def inputs(data_files, num_epochs=1, train=False, batch_size=1):
             data_files, train, num_epochs, batch_size,
             num_preprocess_threads=FLAGS.num_preprocess_threads,
             num_readers=1)
-    
+
     return images, bboxes
