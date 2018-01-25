@@ -215,12 +215,13 @@ def bbox_info(box):
     center_x = (box_coordinates[1] + box_coordinates[5])/2
     center_y = (box_coordinates[0] + box_coordinates[4])/2
     center = (center_y, center_x)
+    tan = (box_coordinates[2] - box_coordinates[0]) / (box_coordinates[3] - box_coordinates[1]) 
     angle = np.arctan2((box_coordinates[2] - box_coordinates[0]),
                        (box_coordinates[3] - box_coordinates[1]))
     width = abs(box_coordinates[5] - box_coordinates[1])
     height = abs(box_coordinates[4] - box_coordinates[0])
 
-    return box_coordinates, center, angle, width, height
+    return box_coordinates, center, tan, angle, width, height
 
 
 def get_bbox_info_dict(path):
@@ -230,6 +231,7 @@ def get_bbox_info_dict(path):
     center_x_list = []
     center_y_list = []
     # list of angles
+    tan_list = []
     angle_list = []
     cos_list = []
     sin_list = []
@@ -239,11 +241,12 @@ def get_bbox_info_dict(path):
     # list of label success/fail, 1/0
     grasp_success = []
     for i, box in enumerate(read_label_file(path)):
-        coordinates, center, angle, width, height = bbox_info(box)
+        coordinates, center, tan, angle, width, height = bbox_info(box)
         for i in range(8):
             coordinates_list[i].append(coordinates[i])
         center_x_list.append(center[1])
         center_y_list.append(center[0])
+        tan_list.append(tan)
         angle_list.append(angle)
         cos_list.append(np.cos(angle))
         sin_list.append(np.sin(angle))
@@ -252,16 +255,17 @@ def get_bbox_info_dict(path):
         grasp_success.append(1)
     feature = {}
     for i in range(4):
-        feature['y' + str(i)] = _floats_feature(coordinates_list[2*i])
-        feature['x' + str(i)] = _floats_feature(coordinates_list[2*i+1])
-    feature['cy'] = _floats_feature(center_y_list)
-    feature['cx'] = _floats_feature(center_x_list)
-    feature['theta'] = _floats_feature(angle_list)
-    feature['sin_theta'] = _floats_feature(sin_list)
-    feature['cos_theta'] = _floats_feature(cos_list)
-    feature['width'] = _floats_feature(width_list)
-    feature['height'] = _floats_feature(height_list)
-    feature['grasp_success'] = _int64_feature(grasp_success)
+        feature['bbox/y' + str(i)] = _floats_feature(coordinates_list[2*i])
+        feature['bbox/x' + str(i)] = _floats_feature(coordinates_list[2*i+1])
+    feature['bbox/cy'] = _floats_feature(center_y_list)
+    feature['bbox/cx'] = _floats_feature(center_x_list)
+    feature['bbox/tan'] = _floats_feature(tan_list)
+    feature['bbox/theta'] = _floats_feature(angle_list)
+    feature['bbox/sin_theta'] = _floats_feature(sin_list)
+    feature['bbox/cos_theta'] = _floats_feature(cos_list)
+    feature['bbox/width'] = _floats_feature(width_list)
+    feature['bbox/height'] = _floats_feature(height_list)
+    feature['bbox/grasp_success'] = _int64_feature(grasp_success)
 
     return feature
 

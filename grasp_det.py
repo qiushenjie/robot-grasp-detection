@@ -82,14 +82,20 @@ def run_training():
     if FLAGS.train_or_validation == 'train':
         print('distorted_inputs')
         data_files_ = TRAIN_FILE
-        images, bboxes = grasp_img_proc.distorted_inputs(
+        features = grasp_img_proc.distorted_inputs(
                   [data_files_], FLAGS.num_epochs, batch_size=FLAGS.batch_size)
     else:
         print('inputs')
         data_files_ = VALIDATE_FILE
-        images, bboxes = grasp_img_proc.inputs([data_files_])
+        features = grasp_img_proc.inputs([data_files_])
 
-    x, y, tan, h, w = bboxes_to_grasps(bboxes)
+    image = features['image/decoded']
+    x = features['bbox/cx']
+    y = features['bbox/cy']
+    tan = features['bbox/tan']
+    h = features['bbox/height']
+    w = features['bbox/width']
+                
     x_hat, y_hat, tan_hat, h_hat, w_hat = tf.unstack(inference(images), axis=1) # list
     # tangent of 85 degree is 11
     tan_hat_confined = tf.minimum(11., tf.maximum(-11., tan_hat))
