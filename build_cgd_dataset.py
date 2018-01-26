@@ -19,7 +19,11 @@ import numpy as np
 import tensorflow as tf
 import re
 from scipy.ndimage.filters import median_filter
+from sklearn.preprocessing import normalize
 import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import matplotlib.image as mpimg
 
 # progress bars https://github.com/tqdm/tqdm
 # import tqdm without enforcing it as a dependency
@@ -329,54 +333,11 @@ def _process_image(filename, coder):
     assert image.shape[2] == 3
     return image_data, height, width
 
-def gaussian_kernel_2D(size=(3, 3), center=None, sigma=1):
-    """Create a 2D gaussian kernel with specified size, center, and sigma.
-
-    All coordinates are in (y, x) order, which is (height, width),
-    with (0, 0) at the top left corner.
-
-    Output with the default parameters `size=(3, 3) center=None, sigma=1`:
-
-        [[ 0.36787944  0.60653066  0.36787944]
-         [ 0.60653066  1.          0.60653066]
-         [ 0.36787944  0.60653066  0.36787944]]
-
-    Output with parameters `size=(3, 3) center=(0, 1), sigma=1`:
-
-        [[0.60653067 1.         0.60653067]
-        [0.36787945 0.60653067 0.36787945]
-        [0.082085   0.13533528 0.082085  ]]
-
-    # Arguments
-
-        size: dimensions of the output gaussian (height_y, width_x)
-        center: coordinate of the center (maximum value) of the output gaussian, (height_y, width_x).
-            Default of None will automatically be the center coordinate of the output size.
-        sigma: standard deviation of the gaussian in pixels
-
-    # References:
-
-            https://stackoverflow.com/a/43346070/99379
-            https://stackoverflow.com/a/32279434/99379
-
-    # How to normalize
-
-        g = gaussian_kernel_2d()
-        g /= np.sum(g)
-    """
-    if center is None:
-        center = np.array(size) / 2
-    yy, xx = np.meshgrid(np.arange(size[0]),
-                         np.arange(size[1]),
-                         indexing='ij')
-    kernel = np.exp(-((yy - center[0]) ** 2 + (xx - center[1]) ** 2) / (2. * sigma ** 2))
-    return kernel
-
 
 def add_one_gaussian(image, center, grasp_theta, grasp_width, grasp_height, label):
-    sigma = max(grasp_width, grasp_height)
+    sigma = max(grasp_width, grasp_height) / 10
     # make sure center value for gaussian is 0.5
-    gaussian = gaussian_kernel_2D((image.shape[0], image.shape[1]), center=center, sigma=sigma) / 2
+    gaussian = gaussian_kernel_2D((image.shape[0], image.shape[1]), center=center, sigma=sigma)
     # label 0 is grasp failure, label 1 is grasp success, label 0.5 will have no effect.
     # gaussian center with label 0 should be subtracting 0.5
     # gaussian center with label 1 should be adding 0.5
@@ -385,9 +346,13 @@ def add_one_gaussian(image, center, grasp_theta, grasp_width, grasp_height, labe
     return image
 
 
-def ground_truth_image(image_shape, grasp_cys, grasp_cxs, grasp_thetas, grasp_heights, grasp_widths, labels):
-    image = np.zeros(image_shape[:2])
-    image = 0.5
+def ground_truth_image(
+        image_shape,
+        grasp_cys, grasp_cxs,
+        grasp_thetas,
+        grasp_heights, grasp_widths,
+        labels):
+    gt_images = []
     if not isinstance(grasp_cys, list):
         grasp_cys = [grasp_cys]
         grasp_cxs = [grasp_cxs]
@@ -399,10 +364,17 @@ def ground_truth_image(image_shape, grasp_cys, grasp_cxs, grasp_thetas, grasp_he
     for (grasp_cy, grasp_cx, grasp_theta,
          grasp_height, grasp_width, label) in zip(grasp_cys, grasp_cxs,
                                                   grasp_thetas, grasp_heights,
-                                                  grasp_widths):
-        add_one_gaussian(grasp_cy, grasp_cx, grasp_theta,
-                         grasp_height, grasp_width, label)
-    return image
+                                                  grasp_widths, labels):
+        gt_image = np.zeros(image_shape[:2])
+        gt_image = add_one_gaussian(
+            gt_image, (grasp_cy, grasp_cx), grasp_theta,
+            grasp_height, grasp_width, label)
+        max_num = max(np.max(gt_image), 1.0)
+        min_num = min(np.min(gt_image), -1.0)
+        gt_image = (gt_image - min_num) / (max_num - min_num)
+        gt_images += [gt_image]
+
+    return gt_images
 
 
 def _process_bboxes(name):
@@ -427,16 +399,44 @@ def _bytes_feature(v):
     return tf.train.Feature(bytes_list=tf.train.BytesList(value=[v]))
 
 
-def _convert_to_example(filename, path_pos, path_neg, image_buffer, height, width):
+def _convert_to_example(filename, path_pos, path_neg, image_buffer, height, width, plot=1):
     # Build an Example proto for an example
     feature = {'image/filename': _bytes_feature(filename),
                'image/encoded': _bytes_feature(image_buffer),
                'image/height': _int64_feature(height),
                'image/width': _int64_feature(width)}
 
+    img=mpimg.imread(filename)
+
     (coordinates_list, center_x_list, center_y_list, tan_list,
      angle_list, cos_list, sin_list, width_list, height_list,
      grasp_success) = get_bbox_info_list(path_pos, path_neg)
+    gt_images = ground_truth_image(img.shape, center_x_list, center_y_list, angle_list, height_list, width_list, grasp_success)
+
+    if plot:
+        width = 3
+        gt_plot_height = len(center_x_list)/2
+        fig, axs = plt.subplots(gt_plot_height + 1, 4, figsize=(15, 15))
+        axs[0, 0].imshow(img, zorder=0)
+        # axs[0, 0].arrow(np.array(center_y_list), np.array(center_x_list),
+        #                 np.array(coordinates_list[0]) - np.array(coordinates_list[2]),
+        #                 np.array(coordinates_list[1]) - np.array(coordinates_list[3]), c=grasp_success)
+        axs[0, 0].scatter(np.array(center_y_list), np.array(center_x_list), zorder=2, c=grasp_success, alpha=0.5, lw=2)
+        axs[0, 1].imshow(img, zorder=0)
+        # axs[1, 0].scatter(data[0], data[1])
+        # axs[2, 0].imshow(gt_image)
+        for i, gt_image in enumerate(gt_images):
+            h = i % gt_plot_height + 1
+            w = int(i / gt_plot_height)
+            axs[h, w].imshow(img, zorder=0)
+            axs[h, w].imshow(gt_image, alpha=0.75, zorder=1)
+            # axs[h, w*2+1].imshow(gt_image, alpha=0.75, zorder=1)
+
+        # axs[1, 1].hist2d(data[0], data[1])
+        plt.draw()
+        plt.pause(0.25)
+
+        plt.show()
 
     for i in range(4):
         feature['bbox/y' + str(i)] = _floats_feature(coordinates_list[2*i])
@@ -457,11 +457,12 @@ def _convert_to_example(filename, path_pos, path_neg, image_buffer, height, widt
 
 def main():
 
+    # plt.ion()
     gd = GraspDataset()
     if FLAGS.grasp_download:
         gd.download(dataset=FLAGS.grasp_dataset)
-    train_file = os.path.join(FLAGS.data_dir, 'train-cgd')
-    validation_file = os.path.join(FLAGS.data_dir, 'validation-cgd')
+    train_file = os.path.join(FLAGS.data_dir, 'cornell-grasping-dataset-train.tfrecord')
+    validation_file = os.path.join(FLAGS.data_dir, 'cornell-grasping-dataset-validation.tfrecord')
     print(train_file)
     print(validation_file)
     writer_train = tf.python_io.TFRecordWriter(train_file)
