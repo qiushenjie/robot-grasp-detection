@@ -4,3 +4,4 @@ logdir/*
 *.json
 *.env
 bb_file.txt
+.vscode

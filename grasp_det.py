@@ -96,13 +96,7 @@ def run_training():
     h = features['bbox/height']
     w = features['bbox/width']
 
-    x_hat, y_hat, tan_hat, h_hat, w_hat = tf.unstack(inference(images), axis=1) # list
-    # tangent of 85 degree is 11
-    tan_hat_confined = tf.minimum(11., tf.maximum(-11., tan_hat))
-    tan_confined = tf.minimum(11., tf.maximum(-11., tan))
-    # Loss function
-    gamma = tf.constant(10.)
-    loss = tf.reduce_sum(tf.pow(x_hat -x, 2) +tf.pow(y_hat -y, 2) + gamma*tf.pow(tan_hat_confined - tan_confined, 2) +tf.pow(h_hat -h, 2) +tf.pow(w_hat -w, 2))
+    # loss, x_hat, tan_hat, h_hat, w_hat, y_hat = old_loss(tan, x, y, h, w)
     train_op = tf.train.AdamOptimizer(epsilon=0.1).minimize(loss)
     init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
     sess = tf.Session()
@@ -159,6 +153,16 @@ def run_training():
 
     coord.join(threads)
     sess.close()
+
+def old_loss(tan, x, y, h, w):
+    x_hat, y_hat, tan_hat, h_hat, w_hat = tf.unstack(inference(images), axis=1) # list
+    # tangent of 85 degree is 11
+    tan_hat_confined = tf.minimum(11., tf.maximum(-11., tan_hat))
+    tan_confined = tf.minimum(11., tf.maximum(-11., tan))
+    # Loss function
+    gamma = tf.constant(10.)
+    loss = tf.reduce_sum(tf.pow(x_hat -x, 2) +tf.pow(y_hat -y, 2) + gamma*tf.pow(tan_hat_confined - tan_confined, 2) +tf.pow(h_hat -h, 2) +tf.pow(w_hat -w, 2))
+    return loss, x_hat, tan_hat, h_hat, w_hat, y_hat
 
 def main(_):
     run_training()
