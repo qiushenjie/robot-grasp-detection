@@ -216,7 +216,10 @@ def bbox_info(box):
     center_x = (box_coordinates[1] + box_coordinates[5])/2
     center_y = (box_coordinates[0] + box_coordinates[4])/2
     center = (center_y, center_x)
-    tan = (box_coordinates[2] - box_coordinates[0]) / (box_coordinates[3] - box_coordinates[1])
+    if (box_coordinates[3] - box_coordinates[1]) == 0:
+        tan = np.pi/2
+    else:
+        tan = (box_coordinates[2] - box_coordinates[0]) / (box_coordinates[3] - box_coordinates[1])
     angle = np.arctan2((box_coordinates[2] - box_coordinates[0]),
                        (box_coordinates[3] - box_coordinates[1]))
     width = abs(box_coordinates[5] - box_coordinates[1])
