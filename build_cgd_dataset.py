@@ -4,6 +4,14 @@ The raw data set resides in png and txt files located in the following structure
 
     dataset/03/pcd0302r.png
     dataset/03/pcd0302cpos.txt
+
+image count: 885
+labeled grasps count: 8019
+positive: 5110 (64%)
+negative: 2909 (36%)
+object count: 244
+object category count: 93
+
 '''
 
 import os
@@ -53,6 +61,18 @@ flags.DEFINE_string('data_dir',
 flags.DEFINE_string('grasp_dataset', 'all', 'TODO(ahundt): integrate with brainrobotdata or allow subsets to be specified')
 flags.DEFINE_boolean('grasp_download', False,
                      """Download the grasp_dataset to data_dir if it is not already present.""")
+flags.DEFINE_boolean('plot', False, 'plot data in matplotlib as it is traversed')
+flags.DEFINE_boolean(
+    'redundant', True,
+    """Duplicate images for every bounding box so dataset is easier to traverse.
+       Please note that this does not substantially affect file size because
+       protobuf is the underlying TFRecord data type and it
+       has optimizations eliminating repeated identical data entries.
+    """)
+flags.DEFINE_float('evaluate_fraction', 0.2, 'proportion of dataset to be used separately for evaluation')
+flags.DEFINE_string('train_filename', 'cornell-grasping-dataset-train.tfrecord', 'filename used for the training dataset')
+flags.DEFINE_string('evaluate_filename', 'cornell-grasping-dataset-evaluate.tfrecord', 'filename used for the evaluation dataset')
+
 
 FLAGS = flags.FLAGS
 
@@ -346,7 +366,7 @@ def add_one_gaussian(image, center, grasp_theta, grasp_width, grasp_height, labe
     return image
 
 
-def ground_truth_image(
+def ground_truth_images(
         image_shape,
         grasp_cys, grasp_cxs,
         grasp_thetas,
@@ -377,6 +397,33 @@ def ground_truth_image(
     return gt_images
 
 
+def visualize_example(img, center_x_list, center_y_list, grasp_success, gt_images):
+    width = 3
+    gt_plot_height = len(center_x_list)/2
+    fig, axs = plt.subplots(gt_plot_height + 1, 4, figsize=(15, 15))
+    axs[0, 0].imshow(img, zorder=0)
+    # axs[0, 0].arrow(np.array(center_y_list), np.array(center_x_list),
+    #                 np.array(coordinates_list[0]) - np.array(coordinates_list[2]),
+    #                 np.array(coordinates_list[1]) - np.array(coordinates_list[3]), c=grasp_success)
+    axs[0, 0].scatter(np.array(center_y_list), np.array(center_x_list), zorder=2, c=grasp_success, alpha=0.5, lw=2)
+    axs[0, 1].imshow(img, zorder=0)
+    # axs[1, 0].scatter(data[0], data[1])
+    # axs[2, 0].imshow(gt_image)
+    for i, gt_image in enumerate(gt_images):
+        h = i % gt_plot_height + 1
+        w = int(i / gt_plot_height)
+        axs[h, w].imshow(img, zorder=0)
+        axs[h, w].imshow(gt_image, alpha=0.75, zorder=1)
+        # axs[h, w*2+1].imshow(gt_image, alpha=0.75, zorder=1)
+
+    # axs[1, 1].hist2d(data[0], data[1])
+    plt.draw()
+    plt.pause(0.25)
+
+    plt.show()
+    return width
+
+
 def _process_bboxes(name):
     '''Create a list with the coordinates of the grasping rectangles. Every
     element is either x or y of a vertex.'''
@@ -385,59 +432,40 @@ def _process_bboxes(name):
               lambda coordinate: float(coordinate), f.read().strip().split()))
     return bboxes
 
+
 def _int64_feature(v):
     if not isinstance(v, list):
         v = [v]
     return tf.train.Feature(int64_list=tf.train.Int64List(value=v))
+
 
 def _floats_feature(v):
     if not isinstance(v, list):
         v = [v]
     return tf.train.Feature(float_list=tf.train.FloatList(value=v))
 
+
 def _bytes_feature(v):
     return tf.train.Feature(bytes_list=tf.train.BytesList(value=[v]))
 
 
-def _convert_to_example(filename, path_pos, path_neg, image_buffer, height, width, plot=1):
+def _create_example(filename, image_buffer, height, width, coordinates_list,
+                    center_y_list, center_x_list, tan_list, angle_list,
+                    sin_list, cos_list, width_list, height_list, grasp_success):
+    """
+    coordinates_list: a list containing 8 total lists of floats.
+        Each list contains specific coordinates for the grasping box
+        at that index.
+        [x0, y0, x1, y1, x2, y2, x3, y3]
+
+    This makes lists of coordinates so that images are never repeated.
+    """
+
     # Build an Example proto for an example
     feature = {'image/filename': _bytes_feature(filename),
                'image/encoded': _bytes_feature(image_buffer),
                'image/height': _int64_feature(height),
                'image/width': _int64_feature(width)}
-
-    img=mpimg.imread(filename)
-
-    (coordinates_list, center_x_list, center_y_list, tan_list,
-     angle_list, cos_list, sin_list, width_list, height_list,
-     grasp_success) = get_bbox_info_list(path_pos, path_neg)
-    gt_images = ground_truth_image(img.shape, center_x_list, center_y_list, angle_list, height_list, width_list, grasp_success)
-
-    if plot:
-        width = 3
-        gt_plot_height = len(center_x_list)/2
-        fig, axs = plt.subplots(gt_plot_height + 1, 4, figsize=(15, 15))
-        axs[0, 0].imshow(img, zorder=0)
-        # axs[0, 0].arrow(np.array(center_y_list), np.array(center_x_list),
-        #                 np.array(coordinates_list[0]) - np.array(coordinates_list[2]),
-        #                 np.array(coordinates_list[1]) - np.array(coordinates_list[3]), c=grasp_success)
-        axs[0, 0].scatter(np.array(center_y_list), np.array(center_x_list), zorder=2, c=grasp_success, alpha=0.5, lw=2)
-        axs[0, 1].imshow(img, zorder=0)
-        # axs[1, 0].scatter(data[0], data[1])
-        # axs[2, 0].imshow(gt_image)
-        for i, gt_image in enumerate(gt_images):
-            h = i % gt_plot_height + 1
-            w = int(i / gt_plot_height)
-            axs[h, w].imshow(img, zorder=0)
-            axs[h, w].imshow(gt_image, alpha=0.75, zorder=1)
-            # axs[h, w*2+1].imshow(gt_image, alpha=0.75, zorder=1)
-
-        # axs[1, 1].hist2d(data[0], data[1])
-        plt.draw()
-        plt.pause(0.25)
-
-        plt.show()
-
     for i in range(4):
         feature['bbox/y' + str(i)] = _floats_feature(coordinates_list[2*i])
         feature['bbox/x' + str(i)] = _floats_feature(coordinates_list[2*i+1])
@@ -451,38 +479,70 @@ def _convert_to_example(filename, path_pos, path_neg, image_buffer, height, widt
     feature['bbox/height'] = _floats_feature(height_list)
     feature['bbox/grasp_success'] = _int64_feature(grasp_success)
     example = tf.train.Example(features=tf.train.Features(feature=feature))
+    return example
+
+
+def _create_example_redundant(
+        filename, image_buffer, height, width, coordinates_list,
+        center_y_list, center_x_list, tan_list, angle_list,
+        sin_list, cos_list, width_list, height_list, grasp_success):
+    """
+    coordinates_list: a list containing 8 total lists of floats.
+        Each list contains specific coordinates for the grasping box
+        at that index.
+        [x0, y0, x1, y1, x2, y2, x3, y3]
+
+    All lists of coordinates are size 1,
+    version will be many times larger but easier to read.
+    """
+    for i in range(len(center_x_list)):
+        # Build an Example proto for an example
+        feature = {'image/filename': _bytes_feature(filename),
+                   'image/encoded': _bytes_feature(image_buffer),
+                   'image/height': _int64_feature(height),
+                   'image/width': _int64_feature(width)}
+        for j in range(4):
+            feature['bbox/y' + str(j)] = _floats_feature(coordinates_list[2*j][i])
+            feature['bbox/x' + str(j)] = _floats_feature(coordinates_list[2*j+1][i])
+        feature['bbox/cy'] = _floats_feature(center_y_list[i])
+        feature['bbox/cx'] = _floats_feature(center_x_list[i])
+        feature['bbox/tan'] = _floats_feature(tan_list[i])
+        feature['bbox/theta'] = _floats_feature(angle_list[i])
+        feature['bbox/sin_theta'] = _floats_feature(sin_list[i])
+        feature['bbox/cos_theta'] = _floats_feature(cos_list[i])
+        feature['bbox/width'] = _floats_feature(width_list[i])
+        feature['bbox/height'] = _floats_feature(height_list[i])
+        feature['bbox/grasp_success'] = _int64_feature(grasp_success[i])
+        example = tf.train.Example(features=tf.train.Features(feature=feature))
+    return example
+
+
+def _convert_to_example(filename, path_pos, path_neg, image_buffer, height, width):
+    """
+    """
+    # get the bounding box information as lists of separate floats
+    (coordinates_list, center_x_list, center_y_list, tan_list,
+     angle_list, cos_list, sin_list, width_list, height_list,
+     grasp_success) = get_bbox_info_list(path_pos, path_neg)
+
+    if FLAGS.plot:
+        gt_images = ground_truth_images([height, width], center_x_list, center_y_list, angle_list, height_list, width_list, grasp_success)
+        # load the image with matplotlib for display
+        img = mpimg.imread(filename)
+        visualize_example(img, center_x_list, center_y_list, grasp_success, gt_images)
+
+    create_fn = _create_example
+    if FLAGS.redundant:
+        create_fn = _create_example_redundant
+
+    example = create_fn(filename, image_buffer, height, width, coordinates_list, center_y_list,
+                        center_x_list, tan_list, angle_list, sin_list, cos_list, width_list,
+                        height_list, grasp_success)
 
     return example
 
 
-def main():
-
-    # plt.ion()
-    gd = GraspDataset()
-    if FLAGS.grasp_download:
-        gd.download(dataset=FLAGS.grasp_dataset)
-    train_file = os.path.join(FLAGS.data_dir, 'cornell-grasping-dataset-train.tfrecord')
-    validation_file = os.path.join(FLAGS.data_dir, 'cornell-grasping-dataset-validation.tfrecord')
-    print(train_file)
-    print(validation_file)
-    writer_train = tf.python_io.TFRecordWriter(train_file)
-    writer_validation = tf.python_io.TFRecordWriter(validation_file)
-
-    # Creating a list with all the image paths
-    folders = range(1,11)
-    folders = ['0'+str(i) if i<10 else '10' for i in folders]
-    filenames = []
-    for i in folders:
-        for name in glob.glob(os.path.join(FLAGS.data_dir, i, 'pcd'+i+'*r.png')):
-            filenames.append(name)
-
-    # Shuffle the list of image paths
-    np.random.shuffle(filenames)
-
-    count = 0
-    valid_img = 0
-    train_img = 0
-
+def traverse_dataset(filenames, count, writer_validation, writer_train, valid_img, train_img):
     coder = ImageCoder()
     for filename in tqdm(filenames):
         bbox_pos_path = filename[:-5]+'cpos.txt'
@@ -493,11 +553,59 @@ def main():
         # Split the dataset in 80% for training and 20% for validation
         if count % 5 == 0:
             writer_validation.write(example.SerializeToString())
-            valid_img +=1
+            valid_img += 1
         else:
             writer_train.write(example.SerializeToString())
-            train_img +=1
-        count +=1
+            train_img += 1
+        count += 1
+    return count, train_img, valid_img
+
+
+def get_cornell_grasping_dataset_filenames(data_dir=FLAGS.data_dir, shuffle=True):
+    # Creating a list with all the image paths
+    folders = range(1, 11)
+    folders = ['0'+str(i) if i < 10 else '10' for i in folders]
+    png_filenames = []
+
+    for i in folders:
+        for name in glob.glob(os.path.join(data_dir, i, 'pcd' + i + '*r.png')):
+            png_filenames.append(name)
+
+    if shuffle:
+        # Shuffle the list of image paths
+        np.random.shuffle(png_filenames)
+
+    bbox_successful_filenames = []
+    bbox_failure_filenames = []
+    for filename in tqdm(png_filenames):
+        bbox_pos_path = filename[:-5]+'cpos.txt'
+        bbox_neg_path = filename[:-5]+'cneg.txt'
+        bbox_successful_filenames += [bbox_pos_path]
+        bbox_successful_filenames += [bbox_neg_path]
+    return png_filenames, bbox_successful_filenames, bbox_failure_filenames
+
+
+def main():
+
+    # plt.ion()
+    gd = GraspDataset()
+    if FLAGS.grasp_download:
+        gd.download(dataset=FLAGS.grasp_dataset)
+    train_file = os.path.join(FLAGS.data_dir, FLAGS.train_filename)
+    validation_file = os.path.join(FLAGS.data_dir, FLAGS.evaluate_filename)
+    print(train_file)
+    print(validation_file)
+    writer_train = tf.python_io.TFRecordWriter(train_file)
+    writer_validation = tf.python_io.TFRecordWriter(validation_file)
+
+    # Creating a list with all the image paths
+    png_filenames, _, _ = get_cornell_grasping_dataset_filenames()
+
+    count = 0
+    valid_img = 0
+    train_img = 0
+
+    count, train_img, valid_img = traverse_dataset(png_filenames, count, writer_validation, writer_train, valid_img, train_img)
 
     print('Done converting %d images in TFRecords with %d train images and %d validation images' % (count, train_img, valid_img))
 
