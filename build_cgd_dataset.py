@@ -492,8 +492,9 @@ def _create_example_redundant(
         at that index.
         [x0, y0, x1, y1, x2, y2, x3, y3]
 
-    All lists of coordinates are size 1,
-    version will be many times larger but easier to read.
+    All lists of coordinates are size 1, makes dataset easier to read
+    and is not much larger because of tfrecord (protobuf)
+    size optimizations.
     """
     for i in range(len(center_x_list)):
         # Build an Example proto for an example
