@@ -95,7 +95,7 @@ def run_training():
     tan = features['bbox/tan']
     h = features['bbox/height']
     w = features['bbox/width']
-                
+
     x_hat, y_hat, tan_hat, h_hat, w_hat = tf.unstack(inference(images), axis=1) # list
     # tangent of 85 degree is 11
     tan_hat_confined = tf.minimum(11., tf.maximum(-11., tan_hat))
