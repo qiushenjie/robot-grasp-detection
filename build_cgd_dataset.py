@@ -216,21 +216,23 @@ def bbox_info(box):
     center_x = (box_coordinates[1] + box_coordinates[5])/2
     center_y = (box_coordinates[0] + box_coordinates[4])/2
     center = (center_y, center_x)
+    tan = (box_coordinates[2] - box_coordinates[0]) / (box_coordinates[3] - box_coordinates[1])
     angle = np.arctan2((box_coordinates[2] - box_coordinates[0]),
                        (box_coordinates[3] - box_coordinates[1]))
     width = abs(box_coordinates[5] - box_coordinates[1])
     height = abs(box_coordinates[4] - box_coordinates[0])
 
-    return box_coordinates, center, angle, width, height
+    return box_coordinates, center, tan, angle, width, height
 
 
-def get_bbox_info_dict(path):
+def get_bbox_info_list(path_pos, path_neg):
     # list of list [y0_list, x0_list, y1_list, x1_list, ...]
     coordinates_list = [[]] * 8
     # list of centers
     center_x_list = []
     center_y_list = []
     # list of angles
+    tan_list = []
     angle_list = []
     cos_list = []
     sin_list = []
@@ -239,32 +241,69 @@ def get_bbox_info_dict(path):
     height_list = []
     # list of label success/fail, 1/0
     grasp_success = []
-    for i, box in enumerate(read_label_file(path)):
-        coordinates, center, angle, width, height = bbox_info(box)
-        for i in range(8):
-            coordinates_list[i].append(coordinates[i])
-        center_x_list.append(center[1])
-        center_y_list.append(center[0])
-        angle_list.append(angle)
-        cos_list.append(np.cos(angle))
-        sin_list.append(np.sin(angle))
-        width_list.append(width)
-        height_list.append(height)
-        grasp_success.append(1)
-    feature = {}
-    for i in range(4):
-        feature['y' + str(i)] = _floats_feature(coordinates_list[2*i])
-        feature['x' + str(i)] = _floats_feature(coordinates_list[2*i+1])
-    feature['cy'] = _floats_feature(center_y_list)
-    feature['cx'] = _floats_feature(center_x_list)
-    feature['theta'] = _floats_feature(angle_list)
-    feature['sin_theta'] = _floats_feature(sin_list)
-    feature['cos_theta'] = _floats_feature(cos_list)
-    feature['width'] = _floats_feature(width_list)
-    feature['height'] = _floats_feature(height_list)
-    feature['grasp_success'] = _int64_feature(grasp_success)
 
-    return feature
+    for path_label, path in enumerate([path_neg, path_pos]):
+        for box in read_label_file(path):
+            coordinates, center, tan, angle, width, height = bbox_info(box)
+            for i in range(8):
+                coordinates_list[i].append(coordinates[i])
+            center_x_list.append(center[1])
+            center_y_list.append(center[0])
+            tan_list.append(tan)
+            angle_list.append(angle)
+            cos_list.append(np.cos(angle))
+            sin_list.append(np.sin(angle))
+            width_list.append(width)
+            height_list.append(height)
+            grasp_success.append(path_label)
+
+    return (coordinates_list, center_x_list, center_y_list, tan_list,
+            angle_list, cos_list, sin_list, width_list, height_list,
+            grasp_success)
+
+
+def gaussian_kernel_2D(size=(3, 3), center=None, sigma=1):
+    """Create a 2D gaussian kernel with specified size, center, and sigma.
+
+    All coordinates are in (y, x) order, which is (height, width),
+    with (0, 0) at the top left corner.
+
+    Output with the default parameters `size=(3, 3) center=None, sigma=1`:
+
+        [[ 0.36787944  0.60653066  0.36787944]
+         [ 0.60653066  1.          0.60653066]
+         [ 0.36787944  0.60653066  0.36787944]]
+
+    Output with parameters `size=(3, 3) center=(0, 1), sigma=1`:
+
+        [[0.60653067 1.         0.60653067]
+        [0.36787945 0.60653067 0.36787945]
+        [0.082085   0.13533528 0.082085  ]]
+
+    # Arguments
+
+        size: dimensions of the output gaussian (height_y, width_x)
+        center: coordinate of the center (maximum value) of the output gaussian, (height_y, width_x).
+            Default of None will automatically be the center coordinate of the output size.
+        sigma: standard deviation of the gaussian in pixels
+
+    # References:
+
+            https://stackoverflow.com/a/43346070/99379
+            https://stackoverflow.com/a/32279434/99379
+
+    # How to normalize
+
+        g = gaussian_kernel_2d()
+        g /= np.sum(g)
+    """
+    if center is None:
+        center = np.array(size) / 2
+    yy, xx = np.meshgrid(np.arange(size[0]),
+                         np.arange(size[1]),
+                         indexing='ij')
+    kernel = np.exp(-((yy - center[0]) ** 2 + (xx - center[1]) ** 2) / (2. * sigma ** 2))
+    return kernel
 
 
 class ImageCoder(object):
@@ -384,16 +423,34 @@ def _floats_feature(v):
 def _bytes_feature(v):
     return tf.train.Feature(bytes_list=tf.train.BytesList(value=[v]))
 
-def _convert_to_example(filename, bbox_pos, bbox_neg, image_buffer, height, width):
+
+def _convert_to_example(filename, path_pos, path_neg, image_buffer, height, width):
     # Build an Example proto for an example
     feature = {'image/filename': _bytes_feature(filename),
                'image/encoded': _bytes_feature(image_buffer),
                'image/height': _int64_feature(height),
                'image/width': _int64_feature(width)}
-    feature.update(bbox_pos)
-    feature.update(bbox_neg)
+
+    (coordinates_list, center_x_list, center_y_list, tan_list,
+     angle_list, cos_list, sin_list, width_list, height_list,
+     grasp_success) = get_bbox_info_list(path_pos, path_neg)
+
+    for i in range(4):
+        feature['bbox/y' + str(i)] = _floats_feature(coordinates_list[2*i])
+        feature['bbox/x' + str(i)] = _floats_feature(coordinates_list[2*i+1])
+    feature['bbox/cy'] = _floats_feature(center_y_list)
+    feature['bbox/cx'] = _floats_feature(center_x_list)
+    feature['bbox/tan'] = _floats_feature(tan_list)
+    feature['bbox/theta'] = _floats_feature(angle_list)
+    feature['bbox/sin_theta'] = _floats_feature(sin_list)
+    feature['bbox/cos_theta'] = _floats_feature(cos_list)
+    feature['bbox/width'] = _floats_feature(width_list)
+    feature['bbox/height'] = _floats_feature(height_list)
+    feature['bbox/grasp_success'] = _int64_feature(grasp_success)
     example = tf.train.Example(features=tf.train.Features(feature=feature))
+
     return example
+
 
 def main():
 
@@ -426,10 +483,8 @@ def main():
     for filename in tqdm(filenames):
         bbox_pos_path = filename[:-5]+'cpos.txt'
         bbox_neg_path = filename[:-5]+'cneg.txt'
-        bbox_pos_dict = get_bbox_info_dict(bbox_pos_path)
-        bbox_neg_dict = get_bbox_info_dict(bbox_neg_path)
         image_buffer, height, width = _process_image(filename, coder)
-        example = _convert_to_example(filename, bbox_pos_dict, bbox_neg_dict,
+        example = _convert_to_example(filename, bbox_pos_path, bbox_neg_path,
                                       image_buffer, height, width)
         # Split the dataset in 80% for training and 20% for validation
         if count % 5 == 0:

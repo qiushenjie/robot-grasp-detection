@@ -28,18 +28,19 @@ def parse_example_proto(examples_serialized):
         'image/width': tf.FixedLenFeature([], dtype=tf.int32,
                                           default_value='')}
     for i in range(4):
-        y_key = 'y' + str(i)
-        x_key = 'x' + str(i)
+        y_key = 'bbox/y' + str(i)
+        x_key = 'bbox/x' + str(i)
         feature_map[y_key] = tf.VarLenFeature(dtype=tf.float32)
         feature_map[x_key] = tf.VarLenFeature(dtype=tf.float32)
-    feature_map['cy'] = tf.VarLenFeature(dtype=tf.float32)
-    feature_map['cx'] = tf.VarLenFeature(dtype=tf.float32)
-    feature_map['theta'] = tf.VarLenFeature(dtype=tf.float32)
-    feature_map['sin_theta'] = tf.VarLenFeature(dtype=tf.float32)
-    feature_map['cos_theta'] = tf.VarLenFeature(dtype=tf.float32)
-    feature_map['width'] = tf.VarLenFeature(dtype=tf.float32)
-    feature_map['height'] = tf.VarLenFeature(dtype=tf.float32)
-    feature_map['grasp_success'] = tf.VarLenFeature(dtype=tf.int32)
+    feature_map['bbox/cy'] = tf.VarLenFeature(dtype=tf.float32)
+    feature_map['bbox/cx'] = tf.VarLenFeature(dtype=tf.float32)
+    feature_map['bbox/tan'] = tf.VarLenFeature(dtype=tf.float32)
+    feature_map['bbox/theta'] = tf.VarLenFeature(dtype=tf.float32)
+    feature_map['bbox/sin_theta'] = tf.VarLenFeature(dtype=tf.float32)
+    feature_map['bbox/cos_theta'] = tf.VarLenFeature(dtype=tf.float32)
+    feature_map['bbox/width'] = tf.VarLenFeature(dtype=tf.float32)
+    feature_map['bbox/height'] = tf.VarLenFeature(dtype=tf.float32)
+    feature_map['bbox/grasp_success'] = tf.VarLenFeature(dtype=tf.int32)
 
     features = tf.parse_single_example(examples_serialized, feature_map)
 
@@ -74,8 +75,9 @@ def distort_color(image, thread_id):
 
 
 def distort_image(image, height, width, thread_id):
-    distorted_image = tf.image.random_flip_left_right(image)
-    distorted_image = distort_color(distorted_image, thread_id)
+    # Need to update coordinates if flipping
+    # distorted_image = tf.image.random_flip_left_right(image)
+    distorted_image = distort_color(image, thread_id)
     return distorted_image
 
 
@@ -89,8 +91,8 @@ def image_preprocessing(image_buffer, train, thread_id=0):
         image = distort_image(image, height, width, thread_id)
     #else:
     #    image = eval_image(image, height, width)
-    image = tf.subtract(image, 0.5)
-    image = tf.multiply(image, 2.0)
+    # image = tf.subtract(image, 0.5)
+    # image = tf.multiply(image, 2.0)
     return image
 
 
@@ -134,12 +136,10 @@ def batch_inputs(data_files, train, num_epochs, batch_size,
         reader = tf.TFRecordReader()
         _, examples_serialized = reader.read(filename_queue)
 
-    images_and_bboxes=[]
     features = []
     for thread_id in range(num_preprocess_threads):
         feature = parse_example_proto(examples_serialized)
         feature['image/decoded'] = image_preprocessing(feature['image/encoded'], train, thread_id)
-        images_and_bboxes.append([image, bbox])
         features.append(feature)
 
     features = tf.train.batch_join(
@@ -147,34 +147,32 @@ def batch_inputs(data_files, train, num_epochs, batch_size,
         batch_size=batch_size,
         capacity=2*num_preprocess_threads*batch_size)
     
-    # TODO replace with grasp_dataset.py
-    height = FLAGS.image_size
-    width = FLAGS.image_size
-    depth = 3
+    # height = FLAGS.image_size
+    # width = FLAGS.image_size
+    # depth = 3
 
-    images = tf.cast(images, tf.float32)
-    images = tf.reshape(images, shape=[batch_size, height, width, depth])
+    # features['image/decoded'] = tf.reshape(features['image/decoded'], shape=[batch_size, height, width, depth])
 
-    return images, bboxes
+    return features
 
 
 def distorted_inputs(data_files, num_epochs, train=True, batch_size=None):
     with tf.device('/cpu:0'):
         print(train)
-        images, bboxes = batch_inputs(
+        features = batch_inputs(
             data_files, train, num_epochs, batch_size,
             num_preprocess_threads=FLAGS.num_preprocess_threads,
             num_readers=FLAGS.num_readers)
 
-    return images, bboxes
+    return features
 
 
 def inputs(data_files, num_epochs=1, train=False, batch_size=1):
     with tf.device('/cpu:0'):
         print(train)
-        images, bboxes = batch_inputs(
+        features = batch_inputs(
             data_files, train, num_epochs, batch_size,
             num_preprocess_threads=FLAGS.num_preprocess_threads,
             num_readers=1)
 
-    return images, bboxes
+    return features

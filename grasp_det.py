@@ -82,21 +82,21 @@ def run_training():
     if FLAGS.train_or_validation == 'train':
         print('distorted_inputs')
         data_files_ = TRAIN_FILE
-        images, bboxes = grasp_img_proc.distorted_inputs(
+        features = grasp_img_proc.distorted_inputs(
                   [data_files_], FLAGS.num_epochs, batch_size=FLAGS.batch_size)
     else:
         print('inputs')
         data_files_ = VALIDATE_FILE
-        images, bboxes = grasp_img_proc.inputs([data_files_])
+        features = grasp_img_proc.inputs([data_files_])
 
-    x, y, tan, h, w = bboxes_to_grasps(bboxes)
-    x_hat, y_hat, tan_hat, h_hat, w_hat = tf.unstack(inference(images), axis=1) # list
-    # tangent of 85 degree is 11
-    tan_hat_confined = tf.minimum(11., tf.maximum(-11., tan_hat))
-    tan_confined = tf.minimum(11., tf.maximum(-11., tan))
-    # Loss function
-    gamma = tf.constant(10.)
-    loss = tf.reduce_sum(tf.pow(x_hat -x, 2) +tf.pow(y_hat -y, 2) + gamma*tf.pow(tan_hat_confined - tan_confined, 2) +tf.pow(h_hat -h, 2) +tf.pow(w_hat -w, 2))
+    image = features['image/decoded']
+    x = features['bbox/cx']
+    y = features['bbox/cy']
+    tan = features['bbox/tan']
+    h = features['bbox/height']
+    w = features['bbox/width']
+
+    # loss, x_hat, tan_hat, h_hat, w_hat, y_hat = old_loss(tan, x, y, h, w)
     train_op = tf.train.AdamOptimizer(epsilon=0.1).minimize(loss)
     init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
     sess = tf.Session()
@@ -153,6 +153,16 @@ def run_training():
 
     coord.join(threads)
     sess.close()
+
+def old_loss(tan, x, y, h, w):
+    x_hat, y_hat, tan_hat, h_hat, w_hat = tf.unstack(inference(images), axis=1) # list
+    # tangent of 85 degree is 11
+    tan_hat_confined = tf.minimum(11., tf.maximum(-11., tan_hat))
+    tan_confined = tf.minimum(11., tf.maximum(-11., tan))
+    # Loss function
+    gamma = tf.constant(10.)
+    loss = tf.reduce_sum(tf.pow(x_hat -x, 2) +tf.pow(y_hat -y, 2) + gamma*tf.pow(tan_hat_confined - tan_confined, 2) +tf.pow(h_hat -h, 2) +tf.pow(w_hat -w, 2))
+    return loss, x_hat, tan_hat, h_hat, w_hat, y_hat
 
 def main(_):
     run_training()
