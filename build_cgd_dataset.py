@@ -220,7 +220,7 @@ def read_label_file(path):
         has_nan = False
         for l in f:
             x, y = map(float, l.split())
-            # XXX some bounding boxes has nan coordinates
+            # some bounding boxes have invalid NaN coordinates, skip them
             if np.isnan(x) or np.isnan(y):
                 has_nan = True
             xys.append((x, y))
@@ -354,8 +354,10 @@ def _process_image(filename, coder):
     return image_data, height, width
 
 
-def add_one_gaussian(image, center, grasp_theta, grasp_width, grasp_height, label):
-    sigma = max(grasp_width, grasp_height) / 10
+def add_one_gaussian(image, center, grasp_theta, grasp_width, grasp_height, label, sigma_divisor=10):
+    """ Compare to ground_truth_image in grasp_img_proc.py
+    """
+    sigma = max(grasp_width, grasp_height) / sigma_divisor
     # make sure center value for gaussian is 0.5
     gaussian = gaussian_kernel_2D((image.shape[0], image.shape[1]), center=center, sigma=sigma)
     # label 0 is grasp failure, label 1 is grasp success, label 0.5 will have no effect.

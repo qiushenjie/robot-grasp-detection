@@ -13,6 +13,7 @@ import grasp_img_proc
 from grasp_inf import inference
 import time
 from tensorflow.python.platform import flags
+import keras
 
 
 flags.DEFINE_string('data_dir',
