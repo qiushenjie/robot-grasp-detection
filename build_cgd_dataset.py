@@ -62,6 +62,8 @@ flags.DEFINE_string('grasp_dataset', 'all', 'TODO(ahundt): integrate with brainr
 flags.DEFINE_boolean('grasp_download', False,
                      """Download the grasp_dataset to data_dir if it is not already present.""")
 flags.DEFINE_boolean('plot', False, 'plot data in matplotlib as it is traversed')
+flags.DEFINE_boolean('write', True, 'Actually write the tfrecord files if True, simply gather stats if False.')
+flags.DEFINE_boolean('shuffle', True, 'shuffle the image order before running')
 flags.DEFINE_boolean(
     'redundant', True,
     """Duplicate images for every bounding box so dataset is easier to traverse.
@@ -72,6 +74,7 @@ flags.DEFINE_boolean(
 flags.DEFINE_float('evaluate_fraction', 0.2, 'proportion of dataset to be used separately for evaluation')
 flags.DEFINE_string('train_filename', 'cornell-grasping-dataset-train.tfrecord', 'filename used for the training dataset')
 flags.DEFINE_string('evaluate_filename', 'cornell-grasping-dataset-evaluate.tfrecord', 'filename used for the evaluation dataset')
+flags.DEFINE_string('stats_filename', 'cornell-grasping-dataset-stats.md', 'filename used for the dataset statistics file')
 
 
 FLAGS = flags.FLAGS
@@ -215,6 +218,9 @@ class GraspDataset(object):
 
 
 def read_label_file(path):
+    """
+     based on https://github.com/falcondai/robot-grasp
+    """
     with open(path) as f:
         xys = []
         has_nan = False
@@ -268,6 +274,7 @@ def get_bbox_info_list(path_pos, path_neg):
     height_list = []
     # list of label success/fail, 1/0
     grasp_success = []
+    count_fail_success = [0, 0]
 
     for path_label, path in enumerate([path_neg, path_pos]):
         for box in read_label_file(path):
@@ -283,10 +290,11 @@ def get_bbox_info_list(path_pos, path_neg):
             width_list.append(width)
             height_list.append(height)
             grasp_success.append(path_label)
+            count_fail_success[path_label] += 1
 
     return (coordinates_list, center_x_list, center_y_list, tan_list,
             angle_list, cos_list, sin_list, width_list, height_list,
-            grasp_success)
+            grasp_success, count_fail_success)
 
 
 def gaussian_kernel_2D(size=(3, 3), center=None, sigma=1):
@@ -334,13 +342,16 @@ def gaussian_kernel_2D(size=(3, 3), center=None, sigma=1):
 
 
 class ImageCoder(object):
+    # probably based on https://github.com/visipedia/tfrecords
     def __init__(self):
         self._sess = tf.Session()
         self._decode_png_data = tf.placeholder(dtype=tf.string)
         self._decode_png = tf.image.decode_png(self._decode_png_data, channels=3)
+
     def decode_png(self, image_data):
         return self._sess.run(self._decode_png,
                               feed_dict={self._decode_png_data: image_data})
+
 
 def _process_image(filename, coder):
     # Decode the image
@@ -451,7 +462,7 @@ def _bytes_feature(v):
     return tf.train.Feature(bytes_list=tf.train.BytesList(value=[v]))
 
 
-def _create_example(filename, image_buffer, height, width, coordinates_list,
+def _create_examples(filename, image_buffer, height, width, coordinates_list,
                     center_y_list, center_x_list, tan_list, angle_list,
                     sin_list, cos_list, width_list, height_list, grasp_success):
     """
@@ -461,6 +472,10 @@ def _create_example(filename, image_buffer, height, width, coordinates_list,
         [x0, y0, x1, y1, x2, y2, x3, y3]
 
     This makes lists of coordinates so that images are never repeated.
+
+    # Returns
+
+      A list of examples
     """
 
     # Build an Example proto for an example
@@ -481,10 +496,10 @@ def _create_example(filename, image_buffer, height, width, coordinates_list,
     feature['bbox/height'] = _floats_feature(height_list)
     feature['bbox/grasp_success'] = _int64_feature(grasp_success)
     example = tf.train.Example(features=tf.train.Features(feature=feature))
-    return example
+    return [example]
 
 
-def _create_example_redundant(
+def _create_examples_redundant(
         filename, image_buffer, height, width, coordinates_list,
         center_y_list, center_x_list, tan_list, angle_list,
         sin_list, cos_list, width_list, height_list, grasp_success):
@@ -498,6 +513,7 @@ def _create_example_redundant(
     and is not much larger because of tfrecord (protobuf)
     size optimizations.
     """
+    examples = []
     for i in range(len(center_x_list)):
         # Build an Example proto for an example
         feature = {'image/filename': _bytes_feature(filename),
@@ -516,17 +532,20 @@ def _create_example_redundant(
         feature['bbox/width'] = _floats_feature(width_list[i])
         feature['bbox/height'] = _floats_feature(height_list[i])
         feature['bbox/grasp_success'] = _int64_feature(grasp_success[i])
-        example = tf.train.Example(features=tf.train.Features(feature=feature))
-    return example
+        examples += [tf.train.Example(features=tf.train.Features(feature=feature))]
+
+    return examples
 
 
-def _convert_to_example(filename, path_pos, path_neg, image_buffer, height, width):
+def _convert_to_examples(filename, path_pos, path_neg, image_buffer, height, width):
     """
     """
     # get the bounding box information as lists of separate floats
     (coordinates_list, center_x_list, center_y_list, tan_list,
      angle_list, cos_list, sin_list, width_list, height_list,
-     grasp_success) = get_bbox_info_list(path_pos, path_neg)
+     grasp_success, count_fail_success) = get_bbox_info_list(path_pos, path_neg)
+
+    attempt_count = len(center_x_list)
 
     if FLAGS.plot:
         gt_images = ground_truth_images([height, width], center_x_list, center_y_list, angle_list, height_list, width_list, grasp_success)
@@ -534,37 +553,69 @@ def _convert_to_example(filename, path_pos, path_neg, image_buffer, height, widt
         img = mpimg.imread(filename)
         visualize_example(img, center_x_list, center_y_list, grasp_success, gt_images)
 
-    create_fn = _create_example
+    create_fn = _create_examples
     if FLAGS.redundant:
-        create_fn = _create_example_redundant
+        create_fn = _create_examples_redundant
 
-    example = create_fn(filename, image_buffer, height, width, coordinates_list, center_y_list,
-                        center_x_list, tan_list, angle_list, sin_list, cos_list, width_list,
-                        height_list, grasp_success)
+    examples = create_fn(filename, image_buffer, height, width, coordinates_list, center_y_list,
+                         center_x_list, tan_list, angle_list, sin_list, cos_list, width_list,
+                         height_list, grasp_success)
 
-    return example
+    return examples, attempt_count, count_fail_success
 
 
-def traverse_dataset(filenames, count, writer_validation, writer_train, valid_img, train_img):
+def traverse_dataset(filenames, eval_fraction=FLAGS.evaluate_fraction, write=True, train_file=None, validation_file=None):
     coder = ImageCoder()
-    for filename in tqdm(filenames):
+    image_count = len(filenames)
+    train_image_count = 0
+    eval_image_count = 0
+    train_attempt_count = 0
+    eval_attempt_count = 0
+    total_attempt_count = 0
+    train_fail_success_count = [0, 0]
+    eval_fail_success_count = [0, 0]
+    steps_per_eval = int(np.ceil(1.0 / eval_fraction))
+
+    if write:
+        writer_train = tf.python_io.TFRecordWriter(train_file)
+        writer_validation = tf.python_io.TFRecordWriter(validation_file)
+
+    for i, filename in enumerate(tqdm(filenames)):
         bbox_pos_path = filename[:-5]+'cpos.txt'
         bbox_neg_path = filename[:-5]+'cneg.txt'
         image_buffer, height, width = _process_image(filename, coder)
-        example = _convert_to_example(filename, bbox_pos_path, bbox_neg_path,
-                                      image_buffer, height, width)
+        examples, attempt_count, count_fail_success = _convert_to_examples(
+            filename, bbox_pos_path, bbox_neg_path, image_buffer, height, width)
+
         # Split the dataset in 80% for training and 20% for validation
-        if count % 5 == 0:
-            writer_validation.write(example.SerializeToString())
-            valid_img += 1
+        total_attempt_count += attempt_count
+        if i % steps_per_eval == 0:
+            eval_image_count += 1
+            eval_attempt_count += attempt_count
+            eval_fail_success_count[0] += count_fail_success[0]
+            eval_fail_success_count[1] += count_fail_success[1]
+            if write:
+                for example in examples:
+                    writer_validation.write(example.SerializeToString())
         else:
-            writer_train.write(example.SerializeToString())
-            train_img += 1
-        count += 1
-    return count, train_img, valid_img
+            train_image_count += 1
+            train_attempt_count += attempt_count
+            train_fail_success_count[0] += count_fail_success[0]
+            train_fail_success_count[1] += count_fail_success[1]
+            if write:
+                for example in examples:
+                    writer_train.write(example.SerializeToString())
+
+    if write:
+        writer_train.close()
+        writer_validation.close()
+
+    return (image_count, total_attempt_count, train_image_count, eval_image_count,
+            train_attempt_count, eval_attempt_count, train_fail_success_count,
+            eval_fail_success_count)
 
 
-def get_cornell_grasping_dataset_filenames(data_dir=FLAGS.data_dir, shuffle=True):
+def get_cornell_grasping_dataset_filenames(data_dir=FLAGS.data_dir, shuffle=FLAGS.shuffle):
     # Creating a list with all the image paths
     folders = range(1, 11)
     folders = ['0'+str(i) if i < 10 else '10' for i in folders]
@@ -580,12 +631,16 @@ def get_cornell_grasping_dataset_filenames(data_dir=FLAGS.data_dir, shuffle=True
 
     bbox_successful_filenames = []
     bbox_failure_filenames = []
-    for filename in tqdm(png_filenames):
+    for filename in png_filenames:
         bbox_pos_path = filename[:-5]+'cpos.txt'
         bbox_neg_path = filename[:-5]+'cneg.txt'
         bbox_successful_filenames += [bbox_pos_path]
         bbox_successful_filenames += [bbox_neg_path]
     return png_filenames, bbox_successful_filenames, bbox_failure_filenames
+
+
+def get_stat(name, amount, total, percent_description=''):
+    return ' - %s %s, ' % (amount, name) + "{0:.2f}".format(100.0 * amount/total) + ' percent' + percent_description
 
 
 def main():
@@ -594,27 +649,56 @@ def main():
     gd = GraspDataset()
     if FLAGS.grasp_download:
         gd.download(dataset=FLAGS.grasp_dataset)
-    train_file = os.path.join(FLAGS.data_dir, FLAGS.train_filename)
-    validation_file = os.path.join(FLAGS.data_dir, FLAGS.evaluate_filename)
-    print(train_file)
-    print(validation_file)
-    writer_train = tf.python_io.TFRecordWriter(train_file)
-    writer_validation = tf.python_io.TFRecordWriter(validation_file)
 
     # Creating a list with all the image paths
     png_filenames, _, _ = get_cornell_grasping_dataset_filenames()
 
-    count = 0
-    valid_img = 0
-    train_img = 0
+    train_file = os.path.join(FLAGS.data_dir, FLAGS.train_filename)
+    validation_file = os.path.join(FLAGS.data_dir, FLAGS.evaluate_filename)
+    stats_file = os.path.join(FLAGS.data_dir, FLAGS.stats_filename)
+    print(train_file)
+    print(validation_file)
 
-    count, train_img, valid_img = traverse_dataset(png_filenames, count, writer_validation, writer_train, valid_img, train_img)
+    (image_count, total_attempt_count, train_image_count, eval_image_count,
+     train_attempt_count, eval_attempt_count, train_fail_success_count,
+     eval_fail_success_count) = traverse_dataset(png_filenames, train_file=train_file, validation_file=validation_file)
 
-    print('Done converting %d images in TFRecords with %d train images and %d validation images' % (count, train_img, valid_img))
+    total_success_count = train_fail_success_count[1] + eval_fail_success_count[1]
+    total_fail_count = train_fail_success_count[0] + eval_fail_success_count[0]
 
-    writer_train.close()
-    writer_validation.close()
+    stat_string = ''
 
+    stat_string += '\n' + ('Cornell Grasping Dataset')
+    stat_string += '\n' + ('------------------------')
+    stat_string += '\n' + ('')
+    stat_string += '\n' + ('TFRecord generation complete. Saved files:\n\n - %s\n - %s\n - %s' % (train_file, validation_file, stats_file))
+    stat_string += '\n' + ('')
+    stat_string += '\n' + ('Dataset Statistics')
+    stat_string += '\n' + ('---------------')
+    stat_string += '\n' + ('')
+    stat_string += '\n' + ('### Totals')
+    stat_string += '\n' + (' - %s images' % image_count)
+    stat_string += '\n' + (' - %s grasp attempts' % total_attempt_count)
+    stat_string += '\n' + get_stat('successful grasps', total_success_count, total_attempt_count)
+    stat_string += '\n' + get_stat('failed grasps', total_fail_count, total_attempt_count)
+    stat_string += '\n' + ('')
+    stat_string += '\n' + ('### Training Data')
+    stat_string += '\n' + get_stat('images', train_image_count, image_count)
+    stat_string += '\n' + get_stat('grasp attempts', train_attempt_count, total_attempt_count, ' of total')
+    stat_string += '\n' + get_stat('successful grasps', train_fail_success_count[1], train_attempt_count, ' of training data')
+    stat_string += '\n' + get_stat('failed grasps', train_fail_success_count[0], train_attempt_count, ' of training data')
+    stat_string += '\n' + ('')
+    stat_string += '\n' + ('### Evaluation Data')
+    stat_string += '\n' + get_stat('images', eval_image_count, image_count)
+    stat_string += '\n' + get_stat('grasp attempts', eval_attempt_count, total_attempt_count, ' of toal')
+    stat_string += '\n' + get_stat('successful grasps', eval_fail_success_count[1], eval_attempt_count, ' of eval data')
+    stat_string += '\n' + get_stat('failed grasps', eval_fail_success_count[0], eval_attempt_count, ' of eval data')
+    stat_string += '\n' + ('')
+
+    with open(FLAGS.stats_filename, "w") as text_file:
+        text_file.write(stat_string)
+
+    print(stat_string)
 
 if __name__ == '__main__':
     main()
