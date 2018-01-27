@@ -4,6 +4,7 @@ import keras
 from keras import backend as K
 import keras_contrib
 from costar_google_brainrobotdata.grasp_loss import gaussian_kernel_2D
+from costar_google_brainrobotdata.inception_preprocessing import preprocess_image
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -187,7 +188,7 @@ def batch_inputs(data_files, train, num_epochs, batch_size,
             _, value = reader.read(filename_queue)
             enqueue_ops.append(examples_queue.enqueue([value]))
         tf.train.queue_runner.add_queue_runner(
-            tf.train.queue_runner.QueueRunner(examples_queue,enqueue_ops))
+            tf.train.queue_runner.QueueRunner(examples_queue, enqueue_ops))
         examples_serialized = examples_queue.dequeue()
     else:
         reader = tf.TFRecordReader()
@@ -195,19 +196,7 @@ def batch_inputs(data_files, train, num_epochs, batch_size,
 
     features = []
     for thread_id in range(num_preprocess_threads):
-        if FLAGS.redundant:
-            feature = parse_example_proto_redundant(examples_serialized)
-        else:
-            feature = parse_example_proto(examples_serialized)
-        image = image_preprocessing(feature['image/encoded'], train, thread_id)
-        feature['image/decoded'] = image
-        feature['grasp_success_2D'] = ground_truth_image(
-            image_shape=keras.backend.int_shape(image),
-            center=[feature['bbox/cx'], feature['bbox/cy']],
-            grasp_theta=feature['bbox/theta'],
-            grasp_width=feature['bbox/width'],
-            grasp_height=feature['bbox/height'],
-            label=feature['grasp_success'])
+        feature = parse_and_preprocess(examples_serialized, train, thread_id)
 
         features.append(feature)
 
@@ -223,6 +212,73 @@ def batch_inputs(data_files, train, num_epochs, batch_size,
     # features['image/decoded'] = tf.reshape(features['image/decoded'], shape=[batch_size, height, width, depth])
 
     return features
+
+
+def parse_and_preprocess(examples_serialized, is_training, label_features_to_extract=None, data_features_to_extract=None):
+    if FLAGS.redundant:
+        feature = parse_example_proto_redundant(examples_serialized)
+    else:
+        feature = parse_example_proto(examples_serialized)
+    image = preprocess_image(feature['image/encoded'], is_training=is_training)
+    feature['image/decoded'] = image
+    feature['grasp_success_2D'] = ground_truth_image(
+        image_shape=keras.backend.int_shape(image),
+        center=[feature['bbox/cx'], feature['bbox/cy']],
+        grasp_theta=feature['bbox/theta'],
+        grasp_width=feature['bbox/width'],
+        grasp_height=feature['bbox/height'],
+        label=feature['grasp_success'])
+    if data_features_to_extract is None:
+        return feature
+    else:
+        # extract the features in a specific order if
+        # features_to_extract is specified,
+        # useful for yielding to a generator
+        # like with keras.model.fit().
+        return ([feature[feature_name] for feature_name in label_features_to_extract],
+                [feature[feature_name] for feature_name in data_features_to_extract])
+
+
+def yield_record(
+        tfrecord_filenames, label_features_to_extract, data_features_to_extract,
+        parse_example_proto_fn=parse_and_preprocess, batch_size=32,
+        device='/cpu:0', is_training=True):
+    # based_on https://github.com/visipedia/tfrecords/blob/master/iterate_tfrecords.py
+    with tf.device(device):
+        dataset = tf.data.TFRecordDataset(tfrecord_filenames)
+
+        # call the parse_example_proto_fn with the is_training flag set.
+        def parse_fn_is_training(example):
+            return parse_example_proto_fn(example, is_training=is_training,
+                                          label_features_to_extract=label_features_to_extract,
+                                          data_features_to_extract=data_features_to_extract)
+        dataset = dataset.map(parse_example_proto_fn=parse_fn_is_training)  # Parse the record into tensors.
+        dataset = dataset.repeat()  # Repeat the input indefinitely.
+        dataset = dataset.batch(batch_size)
+        iterator = dataset.make_initializable_iterator()
+    #     # Construct a Reader to read examples from the .tfrecords file
+    #     reader = tf.TFRecordReader()
+    #     _, serialized_example = reader.read(filename_queue)
+
+    #     features = decode_serialized_example(serialized_example, features_to_extract)
+
+    # coord = tf.train.Coordinator()
+    with tf.Session() as sess:
+
+        tf.global_variables_initializer().run()
+        tf.local_variables_initializer().run()
+        # tf.train.start_queue_runners(sess=sess, coord=coord)
+
+        try:
+
+            while not coord.should_stop():
+                next_element = iterator.get_next()
+                outputs = sess.run(next_element)
+
+                yield outputs
+
+        except tf.errors.OutOfRangeError as e:
+            pass
 
 
 def distorted_inputs(data_files, num_epochs, train=True, batch_size=None):

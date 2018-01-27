@@ -2,10 +2,13 @@
 '''
 Training a network on cornell grasping dataset for detecting grasping positions.
 '''
+import os
+import errno
 import sys
 import argparse
 import os.path
 import glob
+import datetime
 import tensorflow as tf
 import numpy as np
 from shapely.geometry import Polygon
@@ -13,7 +16,21 @@ import grasp_img_proc
 from grasp_inf import inference
 import time
 from tensorflow.python.platform import flags
+
 import keras
+import keras_contrib
+from keras.layers import Input, Dense, Concatenate
+from keras.callbacks import ReduceLROnPlateau
+from keras.callbacks import CSVLogger
+from keras.callbacks import EarlyStopping
+from keras.callbacks import ModelCheckpoint
+from keras.callbacks import TensorBoard
+from keras.models import Model
+from costar_google_brainrobotdata.grasp_model import concat_images_with_tiled_vector_layer
+from costar_google_brainrobotdata.grasp_model import top_block
+from costar_google_brainrobotdata.grasp_model import create_tree_roots
+from costar_google_brainrobotdata.grasp_model import dilated_late_concat_model
+from keras_fcn.models import AtrousFCN_Vgg16_16s
 
 
 flags.DEFINE_string('data_dir',
@@ -24,10 +41,13 @@ flags.DEFINE_string('data_dir',
 flags.DEFINE_string('grasp_dataset', 'all', 'TODO(ahundt): integrate with brainrobotdata or allow subsets to be specified')
 flags.DEFINE_boolean('grasp_download', False,
                      """Download the grasp_dataset to data_dir if it is not already present.""")
+flags.DEFINE_string('train_filename', 'cornell-grasping-dataset-train.tfrecord', 'filename used for the training dataset')
+flags.DEFINE_string('evaluate_filename', 'cornell-grasping-dataset-evaluate.tfrecord', 'filename used for the evaluation dataset')
+
 
 flags.DEFINE_float(
     'learning_rate',
-    0.001,
+    0.01,
     'Initial learning rate.'
 )
 flags.DEFINE_integer(
@@ -55,10 +75,150 @@ flags.DEFINE_string(
     'validation',
     'Train or evaluate the dataset'
 )
+flags.DEFINE_integer(
+    'sensor_image_height',
+    480,
+    'The height of the dataset images'
+)
+flags.DEFINE_integer(
+    'sensor_image_width',
+    640,
+    'The width of the dataset images'
+)
 
 FLAGS = flags.FLAGS
-TRAIN_FILE = FLAGS.data_dir + '/train-cgd'
-VALIDATE_FILE = FLAGS.data_dir + '/validation-cgd'
+
+# TODO(ahundt) put these utility functions in utils somewhere
+
+
+def mkdir_p(path):
+    """Create the specified path on the filesystem like the `mkdir -p` command
+
+    Creates one or more filesystem directory levels as needed,
+    and does not return an error if the directory already exists.
+    """
+    # http://stackoverflow.com/questions/600268/mkdir-p-functionality-in-python
+    try:
+        os.makedirs(path)
+    except OSError as exc:  # Python >2.5
+        if exc.errno == errno.EEXIST and os.path.isdir(path):
+            pass
+        else:
+            raise
+
+
+# http://stackoverflow.com/a/5215012/99379
+def timeStamped(fname, fmt='%Y-%m-%d-%H-%M-%S_{fname}'):
+    return datetime.datetime.now().strftime(fmt).format(fname=fname)
+
+
+def dilated_vgg_model(
+        images=None, vectors=None,
+        image_shapes=None, vector_shapes=None,
+        dropout_rate=None,
+        vector_dense_filters=256,
+        dilation_rate=2,
+        activation='sigmoid',
+        final_pooling=None,
+        include_top=True,
+        top='segmentation',
+        classes=1,
+        output_shape=None,
+        create_image_tree_roots_fn=None,
+        create_vector_tree_roots_fn=None,
+        trainable=False,
+        verbose=0):
+
+    # VGG16 weights are shared and not trainable
+    model = AtrousFCN_Vgg16_16s(input_shape=image_shapes[0], include_top=False,
+                                classes=1, upsample=False)
+
+    if not trainable:
+        for layer in model.layers:
+            layer.trainable = False
+
+    def create_vgg_model(tensor, trainable=False):
+        return model(tensor)
+
+    def vector_branch_dense(tensor, vector_dense_filters=vector_dense_filters):
+        """ Vector branches that simply contain a single dense layer.
+        """
+        return Dense(vector_dense_filters)(tensor)
+
+    dilated_late_concat_model(
+        images=images, vectors=vectors,
+        image_shapes=image_shapes, vector_shapes=vector_shapes,
+        dropout_rate=dropout_rate,
+        vector_dense_filters=vector_dense_filters,
+        create_image_tree_roots_fn=create_vgg_model,
+        create_vector_tree_roots_fn=vector_branch_dense,
+        dilation_rate=dilation_rate,
+        activation=activation,
+        final_pooling=final_pooling,
+        include_top=include_top,
+        top=top,
+        classes=classes,
+        output_shape=output_shape,
+        verbose=verbose
+    )
+
+
+
+
+def run_training(learning_rate=0.01, batch_size=64):
+    # create dilated_vgg_model with inputs [image], [sin_theta, cos_theta]
+    model = dilated_vgg_model(
+        image_shapes=[(FLAGS.sensor_image_height, FLAGS.sensor_image_width, 3)],
+        vector_shapes=[(1,), (1,)],
+        dropout_rate=0.5)
+
+    label_features = ['grasp_success_2D']
+    data_features = ['image/decoded', 'bbox/sin_theta', 'bbox/cos_theta']
+
+    monitor_loss_name = 'val_loss'
+    print(monitor_loss_name)
+    monitor_metric_name = 'val_acc'
+    loss = keras_contrib.losses.segmentation_losses.binary_crossentropy
+
+    save_weights = ''
+    model_name = 'dilated_vgg_model'
+    dataset_names_str = 'cornell_grasping'
+    weights_name = timeStamped(save_weights + '-' + model_name + '-dataset_' + dataset_names_str)
+    callbacks = []
+
+    optimizer = keras.optimizers.SGD(learning_rate * 1.0)
+    callbacks = callbacks + [
+        # Reduce the learning rate if training plateaus.
+        keras.callbacks.ReduceLROnPlateau(patience=4, verbose=1, factor=0.5, monitor=monitor_loss_name)
+    ]
+
+    csv_logger = CSVLogger(weights_name + '.csv')
+    callbacks = callbacks + [csv_logger]
+
+    checkpoint = keras.callbacks.ModelCheckpoint(weights_name + '-epoch-{epoch:03d}-' +
+                                                 monitor_loss_name + '-{' + monitor_loss_name + ':.3f}-' +
+                                                 monitor_metric_name + '-{' + monitor_metric_name + ':.3f}.h5',
+                                                 save_best_only=False, verbose=1, monitor=monitor_metric_name)
+    callbacks = callbacks + [checkpoint]
+    print('Enabling tensorboard...')
+    log_dir = './tensorboard_' + weights_name
+    mkdir_p(log_dir)
+    progress_tracker = TensorBoard(log_dir=log_dir, write_graph=True,
+                                   write_grads=True, write_images=True)
+    callbacks = callbacks + [progress_tracker]
+
+    model.compile(optimizer=optimizer,
+                  loss=loss,
+                  metrics=metrics,
+                  callbacks=callbacks)
+    train_file = os.path.join(FLAGS.data_dir, FLAGS.train_filename)
+    validation_file = os.path.join(FLAGS.data_dir, FLAGS.evaluate_filename)
+    model.fit_generator(yield_generator(train_file, label_features, data_features),
+                        steps_per_epoch=6298,
+                        epochs=100,
+                        validation_data=yield_generator(validation_file, label_features, data_features),
+                        validation_steps=1721)
+
 
 def bboxes_to_grasps(bboxes):
     # converting and scaling bounding boxes into grasps, g = {x, y, tan, h, w}
@@ -70,6 +230,7 @@ def bboxes_to_grasps(bboxes):
     w = tf.sqrt(tf.pow((box[6] -box[0])*0.35, 2) + tf.pow((box[7] -box[1])*0.47, 2))
     return x, y, tan, h, w
 
+
 def grasp_to_bbox(x, y, tan, h, w):
     theta = tf.atan(tan)
     edge1 = (x -w/2*tf.cos(theta) +h/2*tf.sin(theta), y -w/2*tf.sin(theta) -h/2*tf.cos(theta))
@@ -78,7 +239,9 @@ def grasp_to_bbox(x, y, tan, h, w):
     edge4 = (x -w/2*tf.cos(theta) -h/2*tf.sin(theta), y -w/2*tf.sin(theta) +h/2*tf.cos(theta))
     return [edge1, edge2, edge3, edge4]
 
-def run_training():
+
+
+def old_run_training():
     print(FLAGS.train_or_validation)
     if FLAGS.train_or_validation == 'train':
         print('distorted_inputs')
@@ -90,17 +253,10 @@ def run_training():
         data_files_ = VALIDATE_FILE
         features = grasp_img_proc.inputs([data_files_])
 
-    image = features['image/decoded']
-    x = features['bbox/cx']
-    y = features['bbox/cy']
-    tan = features['bbox/tan']
-    h = features['bbox/height']
-    w = features['bbox/width']
-
     # loss, x_hat, tan_hat, h_hat, w_hat, y_hat = old_loss(tan, x, y, h, w)
     train_op = tf.train.AdamOptimizer(epsilon=0.1).minimize(loss)
     init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
-    sess = tf.Session()
+    sess = keras.backend.get_session()
     sess.run(init_op)
     coord = tf.train.Coordinator()
     threads = tf.train.start_queue_runners(sess=sess, coord=coord)
@@ -164,6 +320,7 @@ def old_loss(tan, x, y, h, w):
     gamma = tf.constant(10.)
     loss = tf.reduce_sum(tf.pow(x_hat -x, 2) +tf.pow(y_hat -y, 2) + gamma*tf.pow(tan_hat_confined - tan_confined, 2) +tf.pow(h_hat -h, 2) +tf.pow(w_hat -w, 2))
     return loss, x_hat, tan_hat, h_hat, w_hat, y_hat
+
 
 def main(_):
     run_training()
