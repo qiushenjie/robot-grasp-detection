@@ -67,9 +67,8 @@ flags.DEFINE_boolean('shuffle', True, 'shuffle the image order before running')
 flags.DEFINE_boolean(
     'redundant', True,
     """Duplicate images for every bounding box so dataset is easier to traverse.
-       Please note that this does not substantially affect file size because
-       protobuf is the underlying TFRecord data type and it
-       has optimizations eliminating repeated identical data entries.
+       Please note that this substantially affects the output file size,
+       but the dataset parsing code becomes much easier to write.
     """)
 flags.DEFINE_float('evaluate_fraction', 0.2, 'proportion of dataset to be used separately for evaluation')
 flags.DEFINE_string('train_filename', 'cornell-grasping-dataset-train.tfrecord', 'filename used for the training dataset')
