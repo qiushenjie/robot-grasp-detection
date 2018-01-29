@@ -17,6 +17,7 @@ from grasp_inf import inference
 import time
 from tensorflow.python.platform import flags
 
+from keras import backend as K
 import keras
 import keras_contrib
 from keras.layers import Input, Dense, Concatenate
@@ -30,6 +31,7 @@ from costar_google_brainrobotdata.grasp_model import concat_images_with_tiled_ve
 from costar_google_brainrobotdata.grasp_model import top_block
 from costar_google_brainrobotdata.grasp_model import create_tree_roots
 from costar_google_brainrobotdata.grasp_model import dilated_late_concat_model
+import costar_google_brainrobotdata.grasp_loss as grasp_loss
 from keras_fcn.models import AtrousFCN_Vgg16_16s
 
 
@@ -124,45 +126,44 @@ def dilated_vgg_model(
         top='segmentation',
         classes=1,
         output_shape=None,
-        create_image_tree_roots_fn=None,
-        create_vector_tree_roots_fn=None,
         trainable=False,
         verbose=0):
+    with K.name_scope('dilated_vgg_model') as scope:
+        # VGG16 weights are shared and not trainable
+        vgg_model = AtrousFCN_Vgg16_16s(input_shape=image_shapes[0], include_top=False,
+                                        classes=1, upsample=False)
 
-    # VGG16 weights are shared and not trainable
-    model = AtrousFCN_Vgg16_16s(input_shape=image_shapes[0], include_top=False,
-                                classes=1, upsample=False)
+        if not trainable:
+            for layer in vgg_model.layers:
+                layer.trainable = False
 
-    if not trainable:
-        for layer in model.layers:
-            layer.trainable = False
+        def create_vgg_model(tensor):
+            """ Image classifier weights are shared.
+            """
+            return vgg_model(tensor)
 
-    def create_vgg_model(tensor, trainable=False):
-        return model(tensor)
+        def vector_branch_dense(tensor, vector_dense_filters=vector_dense_filters):
+            """ Vector branches that simply contain a single dense layer.
+            """
+            return Dense(vector_dense_filters)(tensor)
 
-    def vector_branch_dense(tensor, vector_dense_filters=vector_dense_filters):
-        """ Vector branches that simply contain a single dense layer.
-        """
-        return Dense(vector_dense_filters)(tensor)
-
-    dilated_late_concat_model(
-        images=images, vectors=vectors,
-        image_shapes=image_shapes, vector_shapes=vector_shapes,
-        dropout_rate=dropout_rate,
-        vector_dense_filters=vector_dense_filters,
-        create_image_tree_roots_fn=create_vgg_model,
-        create_vector_tree_roots_fn=vector_branch_dense,
-        dilation_rate=dilation_rate,
-        activation=activation,
-        final_pooling=final_pooling,
-        include_top=include_top,
-        top=top,
-        classes=classes,
-        output_shape=output_shape,
-        verbose=verbose
-    )
-
-
+        model = dilated_late_concat_model(
+            images=images, vectors=vectors,
+            image_shapes=image_shapes, vector_shapes=vector_shapes,
+            dropout_rate=dropout_rate,
+            vector_dense_filters=vector_dense_filters,
+            create_image_tree_roots_fn=create_vgg_model,
+            create_vector_tree_roots_fn=vector_branch_dense,
+            dilation_rate=dilation_rate,
+            activation=activation,
+            final_pooling=final_pooling,
+            include_top=include_top,
+            top=top,
+            classes=classes,
+            output_shape=output_shape,
+            verbose=verbose
+        )
+    return model
 
 
 def run_training(learning_rate=0.01, batch_size=64):
@@ -172,18 +173,20 @@ def run_training(learning_rate=0.01, batch_size=64):
         vector_shapes=[(1,), (1,)],
         dropout_rate=0.5)
 
-    label_features = ['grasp_success_2D']
-    data_features = ['image/decoded', 'bbox/sin_theta', 'bbox/cos_theta']
+    # see parse_and_preprocess() for the creation of these features
+    label_features = ['grasp_success_yx_3']
+    data_features = ['image/decoded', 'sin_cos_height_width_4']
 
     monitor_loss_name = 'val_loss'
     print(monitor_loss_name)
     monitor_metric_name = 'val_acc'
     loss = keras_contrib.losses.segmentation_losses.binary_crossentropy
+    metrics = [grasp_loss.segmentation_single_pixel_binary_accuracy]
 
     save_weights = ''
     model_name = 'dilated_vgg_model'
     dataset_names_str = 'cornell_grasping'
-    weights_name = timeStamped(save_weights + '-' + model_name + '-dataset_' + dataset_names_str)
+    weights_name = timeStamped(save_weights + '-' + model_name + '-dataset_' + dataset_names_str + '-' + label_features[0])
     callbacks = []
 
     optimizer = keras.optimizers.SGD(learning_rate * 1.0)
@@ -213,10 +216,13 @@ def run_training(learning_rate=0.01, batch_size=64):
                   callbacks=callbacks)
     train_file = os.path.join(FLAGS.data_dir, FLAGS.train_filename)
     validation_file = os.path.join(FLAGS.data_dir, FLAGS.evaluate_filename)
-    model.fit_generator(yield_generator(train_file, label_features, data_features),
+    model.fit_generator(grasp_img_proc.yield_record(
+                            train_file, label_features, data_features),
                         steps_per_epoch=6298,
                         epochs=100,
-                        validation_data=yield_generator(validation_file, label_features, data_features),
+                        validation_data=grasp_img_proc.yield_record(
+                                            validation_file, label_features,
+                                            data_features, batch_size=1),
                         validation_steps=1721)
 
 
@@ -326,6 +332,7 @@ def main(_):
     run_training()
 
 if __name__ == '__main__':
-    FLAGS._parse_flags()
+    # next FLAGS line might be needed in tf 1.4 but not tf 1.5
+    # FLAGS._parse_flags()
     tf.app.run(main=main)
     # tf.app.run(main=main, argv=[sys.argv[0]] + unparsed)

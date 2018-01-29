@@ -5,30 +5,31 @@ from keras import backend as K
 import keras_contrib
 from costar_google_brainrobotdata.grasp_loss import gaussian_kernel_2D
 from costar_google_brainrobotdata.inception_preprocessing import preprocess_image
+from tensorflow.python.platform import flags
 
-FLAGS = tf.app.flags.FLAGS
-
-tf.app.flags.DEFINE_integer('image_size', 224,
-                            """Provide square images of this size.""")
-tf.app.flags.DEFINE_integer('num_preprocess_threads', 12,
-                            """Number of preprocessing threads per tower. """
-                            """Please make this a multiple of 4.""")
-tf.app.flags.DEFINE_integer('num_readers', 12,
-                            """Number of parallel readers during train.""")
-tf.app.flags.DEFINE_integer('input_queue_memory_factor', 12,
-                            """Size of the queue of preprocessed images. """
-                            """Default is ideal but try smaller values, e.g. """
-                            """4, 2 or 1, if host memory is constrained. See """
-                            """comments in code for more details.""")
-tf.app.flags.DEFINE_boolean(
+flags.DEFINE_integer('image_size', 224,
+                     """Provide square images of this size.""")
+flags.DEFINE_integer('num_preprocess_threads', 12,
+                     """Number of preprocessing threads per tower. """
+                     """Please make this a multiple of 4.""")
+flags.DEFINE_integer('num_readers', 12,
+                     """Number of parallel readers during train.""")
+flags.DEFINE_integer('input_queue_memory_factor', 12,
+                     """Size of the queue of preprocessed images. """
+                     """Default is ideal but try smaller values, e.g. """
+                     """4, 2 or 1, if host memory is constrained. See """
+                     """comments in code for more details.""")
+flags.DEFINE_boolean(
     'redundant', True,
     """Duplicate images for every bounding box so dataset is easier to traverse.
        Please note that this does not substantially affect file size because
        protobuf is the underlying TFRecord data type and it
        has optimizations eliminating repeated identical data entries.
     """)
-tf.app.flags.DEFINE_integer('sigma_divisor', 10,
-                            """Sigma divisor for grasp success 2d labels.""")
+flags.DEFINE_integer('sigma_divisor', 10,
+                     """Sigma divisor for grasp success 2d labels.""")
+
+FLAGS = flags.FLAGS
 
 
 def parse_example_proto(examples_serialized):
@@ -140,18 +141,28 @@ def image_preprocessing(image_buffer, train, thread_id=0):
     return image
 
 
-def ground_truth_image(image_shape, center, grasp_theta, grasp_width, grasp_height, label, sigma_divisor=FLAGS.sigma_divisor):
+def approximate_gaussian_ground_truth_image(image_shape, center, grasp_theta, grasp_width, grasp_height, label, sigma_divisor=None):
+    """ Gaussian "ground truth" image approximation for a single proposed grasp at a time.
+
+        For use with the Cornell grasping dataset
+
+       see also: ground_truth_images() in build_cgd_dataset.py
+    """
+    if sigma_divisor is None:
+        sigma_divisor = FLAGS.sigma_divisor
     grasp_dims = keras.backend.concatenate([grasp_width, grasp_height])
     sigma = keras.backend.max(grasp_dims) / sigma_divisor
 
     # make sure center value for gaussian is 0.5
     gaussian = gaussian_kernel_2D(image_shape[:2], center=center, sigma=sigma)
-    # label 0 is grasp failure, label 1 is grasp success, label 0.5 will have no effect.
+    # label 0 is grasp failure, label 1 is grasp success, label 0.5 will have "no effect".
     # gaussian center with label 0 should be subtracting 0.5
     # gaussian center with label 1 should be adding 0.5
     gaussian = ((label * 2) - 1.0) * gaussian
-    image = image + gaussian
-    return image
+    max_num = K.max(K.max(gaussian), K.placeholder(1.0))
+    min_num = K.min(K.min(gaussian), K.placeholder(-1.0))
+    gaussian = (gaussian - min_num) / (max_num - min_num)
+    return gaussian
 
 
 def batch_inputs(data_files, train, num_epochs, batch_size,
@@ -214,6 +225,27 @@ def batch_inputs(data_files, train, num_epochs, batch_size,
     return features
 
 
+def height_width_sin_cos_4(height=None, width=None, sin_theta=None, cos_theta=None, features=None):
+    """ This is the input to pixelwise grasp prediction on the cornell dataset.
+    """
+    sin_cos_height_width = []
+    if features is not None:
+        sin_cos_height_width = [features['bbox/height'], features['bbox/width'],
+                                features['bbox/sin_theta'], features['bbox/cos_theta']]
+    else:
+        con_cos_height_width = [sin_theta, cos_theta, height, width]
+    return K.concatenate(sin_cos_height_width)
+
+
+def grasp_success_yx_3(grasp_success=None, cy=None, cx=None, features=None):
+    if features is not None:
+        combined = [features['bbox/grasp_success'],
+                    features['bbox/cy'], features['bbox/cx']]
+    else:
+        combined = [grasp_success, cy, cx]
+    return K.concatenate(combined)
+
+
 def parse_and_preprocess(examples_serialized, is_training, label_features_to_extract=None, data_features_to_extract=None):
     if FLAGS.redundant:
         feature = parse_example_proto_redundant(examples_serialized)
@@ -221,13 +253,15 @@ def parse_and_preprocess(examples_serialized, is_training, label_features_to_ext
         feature = parse_example_proto(examples_serialized)
     image = preprocess_image(feature['image/encoded'], is_training=is_training)
     feature['image/decoded'] = image
-    feature['grasp_success_2D'] = ground_truth_image(
+    feature['grasp_success_2D'] = approximate_gaussian_ground_truth_image(
         image_shape=keras.backend.int_shape(image),
-        center=[feature['bbox/cx'], feature['bbox/cy']],
+        center=[feature['bbox/cy'], feature['bbox/cx']],
         grasp_theta=feature['bbox/theta'],
         grasp_width=feature['bbox/width'],
         grasp_height=feature['bbox/height'],
         label=feature['grasp_success'])
+    feature['sin_cos_height_width_4'] = height_width_sin_cos_4(features=feature)
+    feature['grasp_success_yx_3'] = grasp_success_yx_3(features=feature)
     if data_features_to_extract is None:
         return feature
     else:
@@ -242,7 +276,7 @@ def parse_and_preprocess(examples_serialized, is_training, label_features_to_ext
 def yield_record(
         tfrecord_filenames, label_features_to_extract, data_features_to_extract,
         parse_example_proto_fn=parse_and_preprocess, batch_size=32,
-        device='/cpu:0', is_training=True):
+        device='/cpu:0', is_training=True, steps=None):
     # based_on https://github.com/visipedia/tfrecords/blob/master/iterate_tfrecords.py
     with tf.device(device):
         dataset = tf.data.TFRecordDataset(tfrecord_filenames)
@@ -253,7 +287,7 @@ def yield_record(
                                           label_features_to_extract=label_features_to_extract,
                                           data_features_to_extract=data_features_to_extract)
         dataset = dataset.map(parse_example_proto_fn=parse_fn_is_training)  # Parse the record into tensors.
-        dataset = dataset.repeat()  # Repeat the input indefinitely.
+        dataset = dataset.repeat(count=steps)  # Repeat the input indefinitely.
         dataset = dataset.batch(batch_size)
         iterator = dataset.make_initializable_iterator()
     #     # Construct a Reader to read examples from the .tfrecords file
@@ -271,7 +305,8 @@ def yield_record(
 
         try:
 
-            while not coord.should_stop():
+            # while not coord.should_stop():
+            while True:
                 next_element = iterator.get_next()
                 outputs = sess.run(next_element)
 
