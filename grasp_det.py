@@ -168,9 +168,10 @@ def dilated_vgg_model(
 
 def run_training(learning_rate=0.01, batch_size=64):
     # create dilated_vgg_model with inputs [image], [sin_theta, cos_theta]
+    # TODO(ahundt) split vector shapes up appropriately for dense layers in dilated_late_concat_model
     model = dilated_vgg_model(
         image_shapes=[(FLAGS.sensor_image_height, FLAGS.sensor_image_width, 3)],
-        vector_shapes=[(1,), (1,)],
+        vector_shapes=[(4,)],
         dropout_rate=0.5)
 
     # see parse_and_preprocess() for the creation of these features
@@ -180,8 +181,10 @@ def run_training(learning_rate=0.01, batch_size=64):
     monitor_loss_name = 'val_loss'
     print(monitor_loss_name)
     monitor_metric_name = 'val_acc'
-    loss = keras_contrib.losses.segmentation_losses.binary_crossentropy
-    metrics = [grasp_loss.segmentation_single_pixel_binary_accuracy]
+    # TODO(ahundt) add a loss that changes size with how open the gripper is
+    # loss = grasp_loss.segmentation_gaussian_binary_crossentropy
+    loss = grasp_loss.segmentation_gaussian_measurement
+    metrics = [grasp_loss.segmentation_single_pixel_binary_accuracy, grasp_loss.mean_pred]
 
     save_weights = ''
     model_name = 'dilated_vgg_model'
