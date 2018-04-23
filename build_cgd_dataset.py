@@ -20,6 +20,7 @@ import tensorflow as tf
 import re
 from scipy.ndimage.filters import median_filter
 
+#modified by js
 # progress bars https://github.com/tqdm/tqdm
 # import tqdm without enforcing it as a dependency
 try:
