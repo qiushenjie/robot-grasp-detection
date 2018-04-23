@@ -12,52 +12,9 @@ from shapely.geometry import Polygon
 import grasp_img_proc
 from grasp_inf import inference
 import time
-from tensorflow.python.platform import flags
 
-
-flags.DEFINE_string('data_dir',
-                    os.path.join(os.path.expanduser("~"),
-                                 '.keras', 'datasets', 'cornell_grasping'),
-                    """Path to dataset in TFRecord format
-                    (aka Example protobufs) and feature csv files.""")
-flags.DEFINE_string('grasp_dataset', 'all', 'TODO(ahundt): integrate with brainrobotdata or allow subsets to be specified')
-flags.DEFINE_boolean('grasp_download', False,
-                     """Download the grasp_dataset to data_dir if it is not already present.""")
-
-flags.DEFINE_float(
-    'learning_rate',
-    0.001,
-    'Initial learning rate.'
-)
-flags.DEFINE_integer(
-    'num_epochs',
-    None,
-    'Number of epochs to run trainer.'
-)
-flags.DEFINE_integer(
-    'batch_size',
-    64,
-    'Batch size.'
-)
-flags.DEFINE_string(
-    'log_dir',
-    '/tmp/tf',
-    'Tensorboard log_dir.'
-)
-flags.DEFINE_string(
-    'model_path',
-    '/tmp/tf/model.ckpt',
-    'Variables for the model.'
-)
-flags.DEFINE_string(
-    'train_or_validation',
-    'validation',
-    'Train or evaluate the dataset'
-)
-
-FLAGS = flags.FLAGS
-TRAIN_FILE = FLAGS.data_dir + '/train-cgd'
-VALIDATE_FILE = FLAGS.data_dir + '/validation-cgd'
+TRAIN_FILE = 'D:/JiangShan/cornell_grasping_dataset/train-cgd'
+VALIDATE_FILE = 'D:/JiangShan/cornell_grasping_dataset/train-cgd'
 
 def bboxes_to_grasps(bboxes):
     # converting and scaling bounding boxes into grasps, g = {x, y, tan, h, w}
@@ -158,6 +115,50 @@ def main(_):
     run_training()
 
 if __name__ == '__main__':
-    FLAGS._parse_flags()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--learning_rate',
+        type=float,
+        default=0.001,
+        help='Initial learning rate.'
+    )
+    parser.add_argument(
+        '--data_dir',
+        type=str,
+        default='/root/imagenet-data',
+        help='Directory with training data.'
+    )
+    parser.add_argument(
+        '--num_epochs',
+        type=int,
+        default=None,
+        help='Number of epochs to run trainer.'
+    )
+    parser.add_argument(
+        '--batch_size',
+        type=int,
+        default=64,
+        help='Batch size.'
+    )
+    parser.add_argument(
+        '--log_dir',
+        type=str,
+        default='./tf',
+        help='Tensorboard log_dir.'
+    )
+    
+    parser.add_argument(
+        '--model_path',
+        type=str,
+        default='./models/grasp/m4/m4.ckpt',
+        help='Variables for the model.'
+    )
+    parser.add_argument(
+        '--train_or_validation',
+        type=str,
+        default='validation',
+        help='Train or evaluate the dataset'
+    )
+    FLAGS, unparsed = parser.parse_known_args()
     tf.app.run(main=main)
     # tf.app.run(main=main, argv=[sys.argv[0]] + unparsed)

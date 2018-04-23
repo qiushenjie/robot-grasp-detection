@@ -23,7 +23,7 @@ def parse_example_proto(examples_serialized):
         }
     features=tf.parse_single_example(examples_serialized, feature_map)
     bboxes = tf.sparse_tensor_to_dense(features['bboxes'])
-    r = 8*tf.random_uniform((1,), minval=0, maxval=tf.size(bboxes, out_type=tf.int32)/8, dtype=tf.int32)
+    r = 8*tf.random_uniform((1,), minval=0, maxval=tf.cast(tf.size(bboxes, out_type=tf.int32)/8,tf.int32), dtype=tf.int32)
     bbox = tf.gather_nd(bboxes, [r,r+1,r+2,r+3,r+4,r+5,r+6,r+7])
     
     return features['image/encoded'], bbox
