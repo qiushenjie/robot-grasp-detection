@@ -17,16 +17,15 @@ tf.app.flags.DEFINE_integer('input_queue_memory_factor', 12,
                             """comments in code for more details.""")
 def parse_example_proto(examples_serialized):
     feature_map={
-        'image/encoded': tf.FixedLenFeature([], dtype=tf.string,
-                                            default_value=''),
+        'image/buffer': tf.FixedLenFeature([], dtype=tf.string, default_value=''),
         'bboxes': tf.VarLenFeature(dtype=tf.float32)
         }
     features=tf.parse_single_example(examples_serialized, feature_map)
     bboxes = tf.sparse_tensor_to_dense(features['bboxes'])
     r = 8*tf.random_uniform((1,), minval=0, maxval=tf.cast(tf.size(bboxes, out_type=tf.int32)/8,tf.int32), dtype=tf.int32)
-    bbox = tf.gather_nd(bboxes, [r,r+1,r+2,r+3,r+4,r+5,r+6,r+7])
+    bbox = tf.gather_nd(bboxes, [r, r+1, r+2, r+3, r+4, r+5, r+6, r+7])
     
-    return features['image/encoded'], bbox
+    return features['image/buffer'], bbox
 
 
 def eval_image(image, height, width):
@@ -65,9 +64,10 @@ def distort_image(image, height, width, thread_id):
 def image_preprocessing(image_buffer, train, thread_id=0):
     height = FLAGS.image_size
     width = FLAGS.image_size
-    image = tf.image.decode_png(image_buffer, channels=3)
+    image = tf.decode_raw(image_buffer, tf.uint8)
+    image = tf.reshape(image,[480, 640, 3])
     image = tf.image.convert_image_dtype(image, dtype=tf.float32)
-    image = tf.image.resize_images(image, [height,width])
+    image = tf.image.resize_images(image, [height, width])
     if train:
         image = distort_image(image, height, width, thread_id)
     #else:

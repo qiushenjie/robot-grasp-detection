@@ -14,7 +14,7 @@ from grasp_inf import inference
 import time
 
 TRAIN_FILE = 'D:/JiangShan/cornell_grasping_dataset/train-cgd'
-VALIDATE_FILE = 'D:/JiangShan/cornell_grasping_dataset/train-cgd'
+VALIDATE_FILE = 'D:/JiangShan/cornell_grasping_dataset/validation-cgd'
 
 def bboxes_to_grasps(bboxes):
     # converting and scaling bounding boxes into grasps, g = {x, y, tan, h, w}
@@ -58,6 +58,8 @@ def run_training():
     init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
     sess = tf.Session()
     sess.run(init_op)
+    writer=tf.summary.FileWriter('log3')
+    summary_op = tf.summary.image('images', images)
     coord = tf.train.Coordinator()
     threads = tf.train.start_queue_runners(sess=sess, coord=coord)
     #save/restore model
@@ -73,6 +75,7 @@ def run_training():
 
     saver = tf.train.Saver(d)
     saver_g = tf.train.Saver(dg)
+    #saver_g = tf.train.import_meta_graph('models\grasp\m4\m4.ckpt.meta')
     #saver.restore(sess, "/root/grasp/grasp-detection/models/imagenet/m2/m2.ckpt")
     saver_g.restore(sess, FLAGS.model_path)
     try:
@@ -84,18 +87,26 @@ def run_training():
             #train
             if FLAGS.train_or_validation == 'train':
                 _, loss_value, x_value, x_model, tan_value, tan_model, h_value, h_model, w_value, w_model = sess.run([train_op, loss, x, x_hat, tan, tan_hat, h, h_hat, w, w_hat])
+                summary = sess.run(summary_op)
+                writer.add_summary(summary)
                 duration = time.time() - start_batch
+                print("step:",step)
                 if step % 100 == 0:
-                    print('Step %d | loss = %s\n | x = %s\n | x_hat = %s\n | tan = %s\n | tan_hat = %s\n | h = %s\n | h_hat = %s\n | w = %s\n | w_hat = %s\n | (%.3f sec/batch\n')%(step, loss_value, x_value[:3], x_model[:3], tan_value[:3], tan_model[:3], h_value[:3], h_model[:3], w_value[:3], w_model[:3], duration)
+                    print('Step %d | loss = %s\n | x = %s\n | x_hat = %s\n | tan = %s\n | tan_hat = %s\n | h = %s\n | h_hat = %s\n | w = %s\n | w_hat = %s\n | (%.3f sec/batch\n'%(step, loss_value, x_value[:3], x_model[:3], tan_value[:3], tan_model[:3], h_value[:3], h_model[:3], w_value[:3], w_model[:3], duration))
                 if step % 1000 == 0:
                     saver_g.save(sess, FLAGS.model_path)
             else:
                 bbox_hat = grasp_to_bbox(x_hat, y_hat, tan_hat, h_hat, w_hat)
                 bbox_value, bbox_model, tan_value, tan_model = sess.run([bboxes, bbox_hat, tan, tan_hat])
+                x = sess.run(x_hat)
+                print(x)
+                summary = sess.run(summary_op)
+                writer.add_summary(summary)
                 bbox_value = np.reshape(bbox_value, -1)
                 bbox_value = [(bbox_value[0]*0.35,bbox_value[1]*0.47),(bbox_value[2]*0.35,bbox_value[3]*0.47),(bbox_value[4]*0.35,bbox_value[5]*0.47),(bbox_value[6]*0.35,bbox_value[7]*0.47)]
                 p1 = Polygon(bbox_value)
                 p2 = Polygon(bbox_model)
+                print(p1.intersection(p2))
                 iou = p1.intersection(p2).area / (p1.area +p2.area -p1.intersection(p2).area)
                 angle_diff = np.abs(np.arctan(tan_model)*180/np.pi -np.arctan(tan_value)*180/np.pi)
                 duration = time.time() -start_batch
@@ -108,6 +119,7 @@ def run_training():
     finally:
         coord.request_stop()
 
+    writer.close()
     coord.join(threads)
     sess.close()
 
