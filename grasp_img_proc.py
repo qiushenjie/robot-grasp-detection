@@ -17,6 +17,7 @@ tf.app.flags.DEFINE_integer('input_queue_memory_factor', 12,
                             """comments in code for more details.""")
 def parse_example_proto(examples_serialized):
     feature_map={
+        'image/filename': tf.FixedLenFeature([], dtype=tf.string),
         'image/buffer': tf.FixedLenFeature([], dtype=tf.string, default_value=''),
         'bboxes': tf.VarLenFeature(dtype=tf.float32)
         }
@@ -25,7 +26,7 @@ def parse_example_proto(examples_serialized):
     r = 8*tf.random_uniform((1,), minval=0, maxval=tf.cast(tf.size(bboxes, out_type=tf.int32)/8,tf.int32), dtype=tf.int32)
     bbox = tf.gather_nd(bboxes, [r, r+1, r+2, r+3, r+4, r+5, r+6, r+7])
     
-    return features['image/buffer'], bbox
+    return features['image/filename'], features['image/buffer'], bbox
 
 
 def eval_image(image, height, width):
@@ -119,11 +120,11 @@ def batch_inputs(data_files, train, num_epochs, batch_size,
     
     images_and_bboxes=[]
     for thread_id in range(num_preprocess_threads):
-        image_buffer, bbox = parse_example_proto(examples_serialized)
+        filename, image_buffer, bbox = parse_example_proto(examples_serialized)
         image = image_preprocessing(image_buffer, train, thread_id)
-        images_and_bboxes.append([image, bbox])
+        images_and_bboxes.append([filename, image, bbox])
     
-    images, bboxes = tf.train.batch_join(
+    filenames, images, bboxes = tf.train.batch_join(
         images_and_bboxes,
         batch_size=batch_size,
         capacity=2*num_preprocess_threads*batch_size)
@@ -135,26 +136,26 @@ def batch_inputs(data_files, train, num_epochs, batch_size,
     images = tf.cast(images, tf.float32)
     images = tf.reshape(images, shape=[batch_size, height, width, depth])
 
-    return images, bboxes 
+    return filenames, images, bboxes
 
 
 def distorted_inputs(data_files, num_epochs, train=True, batch_size=None):
     with tf.device('/cpu:0'):
         print(train)
-        images, bboxes = batch_inputs(
+        filenames , images, bboxes = batch_inputs(
             data_files, train, num_epochs, batch_size,
             num_preprocess_threads=FLAGS.num_preprocess_threads,
             num_readers=FLAGS.num_readers)
   
-    return images, bboxes
+    return filenames, images, bboxes
 
 
 def inputs(data_files, num_epochs=1, train=False, batch_size=1):
     with tf.device('/cpu:0'):
         print(train)
-        images, bboxes = batch_inputs(
+        filenames, images, bboxes = batch_inputs(
             data_files, train, num_epochs, batch_size,
             num_preprocess_threads=FLAGS.num_preprocess_threads,
             num_readers=1)
     
-    return images, bboxes
+    return filenames, images, bboxes

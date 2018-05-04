@@ -14,7 +14,7 @@ from grasp_inf import inference
 import time
 
 TRAIN_FILE = 'D:/JiangShan/cornell_grasping_dataset/train-cgd'
-VALIDATE_FILE = 'D:/JiangShan/cornell_grasping_dataset/validation-cgd'
+VALIDATE_FILE = 'D:/JiangShan/cornell_grasping_dataset/train-cgd'
 
 def bboxes_to_grasps(bboxes):
     # converting and scaling bounding boxes into grasps, g = {x, y, tan, h, w}
@@ -39,12 +39,12 @@ def run_training():
     if FLAGS.train_or_validation == 'train':
         print('distorted_inputs')
         data_files_ = TRAIN_FILE
-        images, bboxes = grasp_img_proc.distorted_inputs(
+        filenames, images, bboxes = grasp_img_proc.distorted_inputs(
                   [data_files_], FLAGS.num_epochs, batch_size=FLAGS.batch_size)
     else:
         print('inputs')
         data_files_ = VALIDATE_FILE
-        images, bboxes = grasp_img_proc.inputs([data_files_])
+        filenames, images, bboxes = grasp_img_proc.inputs([data_files_])
 
     x, y, tan, h, w = bboxes_to_grasps(bboxes)
     x_hat, y_hat, tan_hat, h_hat, w_hat = tf.unstack(inference(images), axis=1) # list
@@ -78,6 +78,10 @@ def run_training():
     #saver_g = tf.train.import_meta_graph('models\grasp\m4\m4.ckpt.meta')
     #saver.restore(sess, "/root/grasp/grasp-detection/models/imagenet/m2/m2.ckpt")
     saver_g.restore(sess, FLAGS.model_path)
+
+    if FLAGS.train_or_validation == 'validation':
+        validation_file = open('validation_result.txt', 'w')
+
     try:
         count = 0
         step = 0
@@ -97,16 +101,23 @@ def run_training():
                     saver_g.save(sess, FLAGS.model_path)
             else:
                 bbox_hat = grasp_to_bbox(x_hat, y_hat, tan_hat, h_hat, w_hat)
-                bbox_value, bbox_model, tan_value, tan_model = sess.run([bboxes, bbox_hat, tan, tan_hat])
-                x = sess.run(x_hat)
-                print(x)
+                filename_value, bbox_value, bbox_model, tan_value, tan_model = sess.run([filenames, bboxes, bbox_hat, tan, tan_hat])
                 summary = sess.run(summary_op)
                 writer.add_summary(summary)
                 bbox_value = np.reshape(bbox_value, -1)
                 bbox_value = [(bbox_value[0]*0.35,bbox_value[1]*0.47),(bbox_value[2]*0.35,bbox_value[3]*0.47),(bbox_value[4]*0.35,bbox_value[5]*0.47),(bbox_value[6]*0.35,bbox_value[7]*0.47)]
                 p1 = Polygon(bbox_value)
                 p2 = Polygon(bbox_model)
-                print(p1.intersection(p2))
+                print(filename_value[0].decode())
+                validation_file.write(filename_value[0].decode()+'\n')
+                bbox_model_str = ''
+                for i in range(4):
+                    for j in range(2):
+                        bbox_model_str += str(bbox_model[i][j][0])
+                        bbox_model_str += ','
+                bbox_model_str = bbox_model_str[:-1]
+                validation_file.write(bbox_model_str+'\n')
+                print(bbox_model_str)
                 iou = p1.intersection(p2).area / (p1.area +p2.area -p1.intersection(p2).area)
                 angle_diff = np.abs(np.arctan(tan_model)*180/np.pi -np.arctan(tan_value)*180/np.pi)
                 duration = time.time() -start_batch
@@ -115,7 +126,8 @@ def run_training():
                     print('image: %d | duration = %.2f | count = %d | iou = %.2f | angle_difference = %.2f' %(step, duration, count, iou, angle_diff))
             step +=1
     except tf.errors.OutOfRangeError:
-        print('Done training for %d epochs, %d steps, %.1f min.' % (FLAGS.num_epochs, step, (time.time()-start_time)/60))
+    	if FLAGS.num_epochs != None:
+        	print('Done training for %d epochs, %d steps, %.1f min.' % (FLAGS.num_epochs, step, (time.time()-start_time)/60))
     finally:
         coord.request_stop()
 
