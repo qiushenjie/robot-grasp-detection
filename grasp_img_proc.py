@@ -10,7 +10,7 @@ tf.app.flags.DEFINE_integer('num_preprocess_threads', 12,
                             """Please make this a multiple of 4.""")
 tf.app.flags.DEFINE_integer('num_readers', 12,
                             """Number of parallel readers during train.""")
-tf.app.flags.DEFINE_integer('input_queue_memory_factor', 12,
+tf.app.flags.DEFINE_integer('input_queue_memory_factor', 4,
                             """Size of the queue of preprocessed images. """
                             """Default is ideal but try smaller values, e.g. """
                             """4, 2 or 1, if host memory is constrained. See """
@@ -18,7 +18,7 @@ tf.app.flags.DEFINE_integer('input_queue_memory_factor', 12,
 def parse_example_proto(examples_serialized):
     feature_map={
         'image/filename': tf.FixedLenFeature([], dtype=tf.string),
-        'image/buffer': tf.FixedLenFeature([], dtype=tf.string, default_value=''),
+        'image/encoded': tf.FixedLenFeature([], dtype=tf.string, default_value=''),
         'bboxes': tf.VarLenFeature(dtype=tf.float32)
         }
     features=tf.parse_single_example(examples_serialized, feature_map)
@@ -26,7 +26,7 @@ def parse_example_proto(examples_serialized):
     r = 8*tf.random_uniform((1,), minval=0, maxval=tf.cast(tf.size(bboxes, out_type=tf.int32)/8,tf.int32), dtype=tf.int32)
     bbox = tf.gather_nd(bboxes, [r, r+1, r+2, r+3, r+4, r+5, r+6, r+7])
     
-    return features['image/filename'], features['image/buffer'], bbox
+    return features['image/filename'], features['image/encoded'], bbox
 
 
 def eval_image(image, height, width):
@@ -65,8 +65,8 @@ def distort_image(image, height, width, thread_id):
 def image_preprocessing(image_buffer, train, thread_id=0):
     height = FLAGS.image_size
     width = FLAGS.image_size
-    image = tf.decode_raw(image_buffer, tf.uint8)
-    image = tf.reshape(image,[480, 640, 3])
+    image = tf.image.decode_png(image_buffer, channels=3)
+    #image = tf.reshape(image,[480, 640, 3])
     image = tf.image.convert_image_dtype(image, dtype=tf.float32)
     image = tf.image.resize_images(image, [height, width])
     if train:

@@ -14,7 +14,7 @@ from grasp_inf import inference
 import time
 
 TRAIN_FILE = 'D:/JiangShan/cornell_grasping_dataset/train-cgd'
-VALIDATE_FILE = 'D:/JiangShan/cornell_grasping_dataset/train-cgd'
+VALIDATE_FILE = 'D:/JiangShan/cornell_grasping_dataset/validation-cgd'
 
 def bboxes_to_grasps(bboxes):
     # converting and scaling bounding boxes into grasps, g = {x, y, tan, h, w}
@@ -46,6 +46,7 @@ def run_training():
         data_files_ = VALIDATE_FILE
         filenames, images, bboxes = grasp_img_proc.inputs([data_files_])
 
+    print(images)
     x, y, tan, h, w = bboxes_to_grasps(bboxes)
     x_hat, y_hat, tan_hat, h_hat, w_hat = tf.unstack(inference(images), axis=1) # list
     # tangent of 85 degree is 11
@@ -155,7 +156,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--num_epochs',
         type=int,
-        default=None,
+        default=25,
         help='Number of epochs to run trainer.'
     )
     parser.add_argument(
